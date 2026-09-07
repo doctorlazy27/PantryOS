@@ -1,0 +1,42 @@
+from fastapi import APIRouter, Depends
+from sqlalchemy.orm import Session
+
+from app.database import get_db
+from app.models.batch import Batch
+from app.schemas.batch import BatchCreate
+from app.auth.dependencies import require_permission
+
+
+router = APIRouter(
+    prefix="/batches",
+    tags=["Batches"]
+)
+
+
+@router.post("/")
+def create_batch(
+    batch: BatchCreate,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(require_permission("receive_purchase_orders"))
+):
+    new_batch = Batch(
+        product_id=batch.product_id,
+        batch_number=batch.batch_number,
+        manufacturing_date=batch.manufacturing_date,
+        expiry_date=batch.expiry_date
+    )
+
+    db.add(new_batch)
+    db.commit()
+    db.refresh(new_batch)
+
+    return new_batch
+
+
+@router.get("/")
+def get_batches(db: Session = Depends(get_db), current_user: dict = Depends(require_permission("view_inventory"))):
+    batches = db.query(Batch).all()
+
+    return {
+        "batches": batches
+    }
