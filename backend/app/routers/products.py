@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
+from datetime import date
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -69,6 +70,7 @@ def create_product(
         quantity=product.quantity,
         unit=product.unit,
         price=product.price,
+        units_per_box=product.units_per_box,
         reorder_level=product.reorder_level
     )
 
@@ -79,6 +81,8 @@ def create_product(
             raise HTTPException(status_code=400, detail="Batch number, manufacturing date, and expiry date are required")
         if product.expiry_date <= product.manufacturing_date:
             raise HTTPException(status_code=400, detail="Expiry date must be after manufacturing date")
+        if product.expiry_date <= date.today():
+            raise HTTPException(status_code=400, detail="Cannot create an already expired batch")
         batch = Batch(
             product_id=new_product.product_id,
             batch_number=product.batch_number,

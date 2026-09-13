@@ -1,4 +1,6 @@
+import asyncio
 import os
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
@@ -7,12 +9,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.auth.router import router as auth_router
 from app.routers.products import router as products_router
 from sqlalchemy import text
-from app.database import engine
-from app.database import Base, engine
+from app.database import SessionLocal, engine
 from app.models.product import Product
 from app.models.warehouse import Warehouse
 from app.routers.warehouses import router as warehouses_router
 from app.models.inventory import Inventory
+from app.models.boxed_unit import BoxedUnit
+from app.models.inventory_movement import InventoryMovement
 from app.routers.inventory import router as inventory_router
 from app.models.batch import Batch
 from app.routers.batches import router as batches_router
@@ -39,33 +42,43 @@ from app.routers.notifications import router as notifications_router
 from app.models.invoice import Invoice
 from app.models.auth_session import AuthSession
 from app.routers.invoices import router as invoices_router
-if os.getenv("AUTO_CREATE_SCHEMA", "false").lower() == "true":
-    Base.metadata.create_all(bind=engine)
+from app.routers.internal_jobs import router as internal_jobs_router
+from app.models.inventory_recommendation import InventoryRecommendation
+from app.routers.recommendations import router as recommendations_router
+from app.services.expiry import process_expiry
 from app.routers.dashboard import router as dashboard_router
+def run_expiry_job() -> None:
+    db = SessionLocal()
+    try:
+        process_expiry(db)
+    finally:
+        db.close()
 
 
-def ensure_warehouse_assignment_columns():
-    with engine.begin() as connection:
-        connection.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS warehouse_id INTEGER REFERENCES warehouses(warehouse_id)"))
-        connection.execute(text("ALTER TABLE registration_requests ADD COLUMN IF NOT EXISTS warehouse_id INTEGER REFERENCES warehouses(warehouse_id)"))
-        connection.execute(text("ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS warehouse_id INTEGER REFERENCES warehouses(warehouse_id)"))
-        connection.execute(text("ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS warehouse_id INTEGER REFERENCES warehouses(warehouse_id)"))
-        connection.execute(text("ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS confirmed_by INTEGER REFERENCES users(user_id)"))
-        connection.execute(text("ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS confirmed_at TIMESTAMP"))
-        connection.execute(text("CREATE TABLE IF NOT EXISTS warehouse_requests (request_id SERIAL PRIMARY KEY, product_id INTEGER NOT NULL REFERENCES products(product_id), quantity INTEGER NOT NULL, warehouse_id INTEGER NOT NULL REFERENCES warehouses(warehouse_id), requested_by INTEGER NOT NULL REFERENCES users(user_id), approved_by INTEGER REFERENCES users(user_id), status VARCHAR(30) NOT NULL DEFAULT 'pending', created_at TIMESTAMP NOT NULL DEFAULT NOW(), approved_at TIMESTAMP)"))
-        connection.execute(text("CREATE TABLE IF NOT EXISTS salesperson_inventory (inventory_id SERIAL PRIMARY KEY, salesperson_id INTEGER NOT NULL REFERENCES users(user_id), product_id INTEGER NOT NULL REFERENCES products(product_id), quantity INTEGER NOT NULL DEFAULT 0)"))
-        connection.execute(text("UPDATE users SET warehouse_id = (SELECT MIN(warehouse_id) FROM warehouses) WHERE warehouse_id IS NULL AND (SELECT COUNT(*) FROM warehouses) = 1"))
-        connection.execute(text("UPDATE registration_requests SET warehouse_id = (SELECT MIN(warehouse_id) FROM warehouses) WHERE warehouse_id IS NULL AND (SELECT COUNT(*) FROM warehouses) = 1"))
-        connection.execute(text("UPDATE sales_orders SET warehouse_id = (SELECT warehouse_id FROM users WHERE users.user_id = sales_orders.created_by) WHERE warehouse_id IS NULL"))
-        connection.execute(text("UPDATE purchase_orders SET warehouse_id = (SELECT warehouse_id FROM users WHERE users.user_id = purchase_orders.created_by) WHERE warehouse_id IS NULL"))
+async def expiry_loop() -> None:
+    while True:
+        await asyncio.sleep(3600)
+        await asyncio.to_thread(run_expiry_job)
 
 
-ensure_warehouse_assignment_columns()
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    if os.getenv("ENABLE_LOCAL_EXPIRY_LOOP", "true").lower() != "true":
+        yield
+        return
+    await asyncio.to_thread(run_expiry_job)
+    task = asyncio.create_task(expiry_loop())
+    try:
+        yield
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
 app = FastAPI(
     title="Food Warehouse Management System",
     description="Backend API for managing food warehouse operations.",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 cors_origins = os.getenv("CORS_ORIGINS") or (
@@ -96,6 +109,8 @@ app.include_router(activity_router)
 app.include_router(notifications_router)
 app.include_router(invoices_router)
 app.include_router(dashboard_router)
+app.include_router(internal_jobs_router)
+app.include_router(recommendations_router)
 
 @app.get("/")
 def root():

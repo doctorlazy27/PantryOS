@@ -4,12 +4,14 @@ from sqlalchemy.orm import Session
 from app.auth.dependencies import require_permission
 from app.database import get_db
 from app.models.inventory import Inventory
+from app.models.inventory_movement import InventoryMovement
 from app.models.warehouse import Warehouse
 from app.models.stock_transfer import StockTransfer
 from app.schemas.stock_transfer import StockTransferCreate
 from app.auth.dependencies import require_permission
 from app.models.inventory import Inventory
 from app.services.activity import log_activity
+from app.services.inventory_guard import require_available_batch
 
 
 router = APIRouter(
@@ -48,6 +50,8 @@ def approve_stock_transfer(
             detail="Only pending transfers can be approved"
         )
 
+    require_available_batch(db, transfer.batch_id)
+
     source_inventory = db.query(Inventory).filter(
         Inventory.product_id == transfer.product_id,
         Inventory.batch_id == transfer.batch_id,
@@ -73,6 +77,17 @@ def approve_stock_transfer(
     ).first()
 
     source_inventory.quantity -= transfer.quantity
+    db.add(InventoryMovement(
+        inventory_id=source_inventory.inventory_id,
+        product_id=source_inventory.product_id,
+        batch_id=source_inventory.batch_id,
+        warehouse_id=source_inventory.warehouse_id,
+        movement_type="TRANSFERRED",
+        quantity=transfer.quantity,
+        actor_id=current_user["user_id"],
+        actor_name=current_user["username"],
+        reason=f"Stock transfer #{transfer.transfer_id} to warehouse {transfer.destination_warehouse_id}.",
+    ))
 
     if destination_inventory:
         destination_inventory.quantity += transfer.quantity
@@ -85,6 +100,19 @@ def approve_stock_transfer(
         )
 
         db.add(destination_inventory)
+        db.flush()
+
+    db.add(InventoryMovement(
+        inventory_id=destination_inventory.inventory_id,
+        product_id=destination_inventory.product_id,
+        batch_id=destination_inventory.batch_id,
+        warehouse_id=destination_inventory.warehouse_id,
+        movement_type="RECEIVED",
+        quantity=transfer.quantity,
+        actor_id=current_user["user_id"],
+        actor_name=current_user["username"],
+        reason=f"Stock transfer #{transfer.transfer_id} from warehouse {transfer.source_warehouse_id}.",
+    ))
 
     transfer.status = "completed"
     log_activity(
@@ -140,6 +168,8 @@ def create_stock_transfer(
             status_code=404,
             detail="Source inventory not found"
         )
+
+    require_available_batch(db, transfer.batch_id)
 
     if inventory.quantity < transfer.quantity:
         raise HTTPException(

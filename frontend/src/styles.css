@@ -114,6 +114,8 @@ select[multiple] option:checked { color: #245d4d; background: #e4f0e1 linear-gra
 @media (max-width: 700px) { .topbar { position: sticky; } .mobile-menu { display: grid; } .panel:hover, .stat-card:hover { transform: none; } .data-row:hover { transform: none; } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; transition-duration: .01ms !important; } }
 .auth-tabs { display: flex; gap: 18px; margin-bottom: 29px; border-bottom: 1px solid #e6e5dc; }
+.inventory-section h3 { margin: 23px 0 0; color: #326d5e; font: 700 13px 'Manrope'; }
+.camera-preview { width: 100%; max-width: 320px; aspect-ratio: 4 / 3; object-fit: cover; border: 1px solid #cfe0d1; border-radius: 8px; background: #183d37; }
 .auth-tabs button { padding: 0 0 10px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: #98a29c; font-size: 12px; font-weight: 700; }
 .auth-tabs button.active { color: #326d5e; border-bottom-color: #326d5e; }
 .auth-success { display: flex; align-items: center; gap: 7px; margin: 2px 0 15px; padding: 10px 11px; color: #3f8067; border: 1px solid #cde3d1; border-radius: 6px; background: #eff8ed; font-size: 11px; }

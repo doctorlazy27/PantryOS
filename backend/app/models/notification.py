@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -8,6 +8,9 @@ from app.database import Base
 
 class Notification(Base):
     __tablename__ = "notifications"
+    __table_args__ = (
+        UniqueConstraint("user_id", "dedupe_key", name="uq_notification_user_dedupe"),
+    )
 
     notification_id: Mapped[int] = mapped_column(
         Integer,
@@ -34,6 +37,8 @@ class Notification(Base):
         String(50),
         nullable=False
     )
+
+    dedupe_key: Mapped[str | None] = mapped_column(String(160), nullable=True, index=True)
 
     is_read: Mapped[bool] = mapped_column(
         default=False,

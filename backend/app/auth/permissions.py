@@ -19,6 +19,8 @@ PERMISSIONS = {
         "approve_stock_transfers",
         "confirm_invoices",
         "approve_inventory_requests",
+        "view_inventory_recommendations",
+        "review_inventory_recommendations",
     },
 
     UserRole.WAREHOUSE_WORKER: {

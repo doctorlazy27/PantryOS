@@ -19,6 +19,8 @@ class Product(Base):
     unit: Mapped[str] = mapped_column(String(50))
     price: Mapped[float] = mapped_column(Float)
 
+    units_per_box: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
     reorder_level: Mapped[int] = mapped_column(
         Integer,
         nullable=False,

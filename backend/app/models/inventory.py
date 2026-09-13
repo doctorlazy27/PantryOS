@@ -1,4 +1,4 @@
-from sqlalchemy import ForeignKey, Integer
+from sqlalchemy import Float, ForeignKey, Integer
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -33,3 +33,11 @@ class Inventory(Base):
         nullable=False,
         default=0
     )
+
+    expired_quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    boxed_units: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    units_per_box: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    unit_price: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    box_unit_cost: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    total_box_cost: Mapped[float] = mapped_column(Float, nullable=False, default=0)

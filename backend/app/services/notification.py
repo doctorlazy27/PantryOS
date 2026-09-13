@@ -10,17 +10,36 @@ def create_notification(
     title: str,
     message: str,
     notification_type: str,
+    dedupe_key: str | None = None,
 ):
     notification = Notification(
         user_id=user_id,
         title=title,
         message=message,
         notification_type=notification_type,
+        dedupe_key=dedupe_key,
     )
 
     db.add(notification)
 
     return notification
+
+
+def create_notification_once(
+    db: Session,
+    user_id: int,
+    title: str,
+    message: str,
+    notification_type: str,
+    dedupe_key: str,
+):
+    existing = db.query(Notification).filter(
+        Notification.user_id == user_id,
+        Notification.dedupe_key == dedupe_key,
+    ).first()
+    if existing:
+        return existing
+    return create_notification(db, user_id, title, message, notification_type, dedupe_key)
 
 
 def notify_roles(

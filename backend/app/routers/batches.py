@@ -1,5 +1,7 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
+from datetime import date
+from fastapi import HTTPException
 
 from app.database import get_db
 from app.models.batch import Batch
@@ -19,6 +21,8 @@ def create_batch(
     db: Session = Depends(get_db),
     current_user: dict = Depends(require_permission("receive_purchase_orders"))
 ):
+    if batch.expiry_date <= date.today():
+        raise HTTPException(status_code=400, detail="Cannot create an already expired batch")
     new_batch = Batch(
         product_id=batch.product_id,
         batch_number=batch.batch_number,

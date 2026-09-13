@@ -1,3 +1,5 @@
+from datetime import date
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -10,6 +12,8 @@ from app.schemas.purchase_order import PurchaseOrderCreate
 from app.auth.dependencies import require_permission
 from app.models.batch import Batch
 from app.models.inventory import Inventory
+from app.models.inventory_movement import InventoryMovement
+from app.services.boxed_units import create_boxed_units
 from app.models.warehouse import Warehouse
 from app.models.supplier import Supplier
 from app.schemas.receiving import ReceivePurchaseOrder
@@ -76,6 +80,8 @@ def receive_purchase_order(
     for item, product in resolved_items:
         if item.expiry_date <= item.manufacturing_date:
             raise HTTPException(status_code=400, detail="Expiry date must be after manufacturing date")
+        if item.expiry_date <= date.today():
+            raise HTTPException(status_code=400, detail="Cannot receive an already expired batch")
 
         batch = Batch(
             product_id=product.product_id,
@@ -91,10 +97,28 @@ def receive_purchase_order(
             product_id=product.product_id,
             warehouse_id=receiving.warehouse_id,
             batch_id=batch.batch_id,
-            quantity=item.quantity
+            quantity=item.quantity,
+            boxed_units=item.boxed_units,
+            units_per_box=item.units_per_box,
+            unit_price=item.unit_price,
+            box_unit_cost=item.box_unit_cost or item.unit_price * item.units_per_box,
+            total_box_cost=item.boxed_units * (item.box_unit_cost or item.unit_price * item.units_per_box),
         )
 
         db.add(inventory)
+        db.flush()
+        create_boxed_units(db, inventory.inventory_id, item.boxed_units, item.units_per_box, item.unit_price, item.scanned_codes)
+        db.add(InventoryMovement(
+            inventory_id=inventory.inventory_id,
+            product_id=inventory.product_id,
+            batch_id=inventory.batch_id,
+            warehouse_id=inventory.warehouse_id,
+            movement_type="RECEIVED",
+            quantity=inventory.quantity,
+            actor_id=current_user["user_id"],
+            actor_name=current_user["username"],
+            reason=f"Purchase order #{purchase_order_id} received.",
+        ))
 
     purchase_order.status = "received"
 

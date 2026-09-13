@@ -1,6 +1,6 @@
-from datetime import date
+from datetime import date, datetime
 
-from sqlalchemy import Date, ForeignKey, Integer, String
+from sqlalchemy import Date, DateTime, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -35,3 +35,6 @@ class Batch(Base):
         Date,
         nullable=False
     )
+
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
+    expired_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

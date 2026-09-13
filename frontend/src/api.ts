@@ -22,10 +22,22 @@ export type DashboardData = {
     quantity: number
     expiry_date: string
   }>
+  inventory_intelligence: Array<{
+    product_id: number
+    product_name: string
+    current_stock: number
+    average_daily_demand: number
+    estimated_days_remaining: number | null
+    stockout_risk: string
+    waste_risk: string
+    potential_surplus: number
+    recommended_reorder: number
+    recommendation: string
+  }>
 }
 
-export type Product = { product_id: number; name: string; category: string; quantity: number; unit: string; price: number; reorder_level: number }
-export type InventoryRecord = { inventory_id: number; product_id: number; warehouse_id: number; batch_id: number; quantity: number }
+export type Product = { product_id: number; name: string; category: string; quantity: number; unit: string; price: number; reorder_level: number; units_per_box: number }
+export type InventoryRecord = { inventory_id: number; product_id: number; warehouse_id: number; batch_id: number; quantity: number; boxed_units: number; units_per_box: number; unit_price: number; box_unit_cost: number; total_box_cost: number; boxed_unit_ids: string[] }
 export type Warehouse = { warehouse_id: number; name: string; location: string }
 export type Customer = { customer_id: number; name: string; phone: string; email?: string; address?: string }
 export type Supplier = { supplier_id: number; name: string; phone: string; email?: string; address?: string }
@@ -36,7 +48,7 @@ export type IncomingMessage = { message_id: number; sender_id: number; sender_us
 export type Invoice = { invoice_id: number; order_id: number; customer_id: number; generated_by?: string; total_amount: number; status: string; created_at?: string; sent_at?: string; confirmed_at?: string }
 export type SalesOrder = { order_id: number; customer_id: number; created_by: number; status: string; created_at: string; items: Array<{ product_name: string; quantity: number }> }
 
-export type ProductInput = Omit<Product, 'product_id' | 'reorder_level'> & { reorder_level?: number; batch_number?: string; manufacturing_date?: string; expiry_date?: string }
+export type ProductInput = Omit<Product, 'product_id' | 'reorder_level' | 'units_per_box'> & { reorder_level?: number; units_per_box?: number; boxed_units?: number; unit_price?: number; box_unit_cost?: number; batch_number?: string; manufacturing_date?: string; expiry_date?: string }
 export type CustomerInput = Omit<Customer, 'customer_id'>
 export type SupplierInput = Omit<Supplier, 'supplier_id'>
 
@@ -110,10 +122,11 @@ export async function getMessages() { return api<{ messages: IncomingMessage[] }
 export async function sendMessage(input: { recipient_ids?: number[]; subject: string; body: string; broadcast?: boolean; reply_to_id?: number }) { return api<{ message: string; recipient_count: number }>('/notifications/messages', { method: 'POST', body: JSON.stringify(input) }) }
 export async function markMessageRead(messageId: number) { return api<{ message_id: number; is_read: boolean }>(`/notifications/messages/${messageId}/read`, { method: 'PATCH' }) }
 export async function getInvoices() { return api<{ invoices: Invoice[] }>('/invoices/') }
-export async function getExpiringInventory(days = 7) { return api<{ days: number; items: Array<{ inventory_id: number; product_id: number; warehouse_id: number; batch_id: number; batch_number: string; quantity: number; expiry_date: string }> }>(`/inventory/expiring?days=${days}`) }
+export async function getExpiringInventory(days = 7) { return api<{ days: number; items: Array<{ inventory_id: number; product_id: number; product_name: string; warehouse_id: number; batch_id: number; batch_number: string; quantity: number; expiry_date: string; status: string; days_remaining: number; estimated_value: number }> }>(`/inventory/expiring?days=${days}`) }
+export async function getExpiredInventory() { return api<{ items: Array<{ inventory_id: number; product_id: number; product_name: string; batch_id: number; batch_number: string; quantity: number; expiry_date: string; status: string; estimated_value: number }> }>('/inventory/expired') }
 export async function getProductInventory(productId: number) { return api<{ product_id: number; inventory: InventoryRecord[] }>(`/inventory/product/${productId}`) }
 export async function getFefo(productId: number) { return api<{ product_id: number; batches: Array<{ inventory_id: number; warehouse_id: number; batch_id: number; batch_number: string; quantity: number; expiry_date: string }> }>(`/inventory/fefo/${productId}`) }
-export async function getOrder(orderId: number) { return api<{ order_id: number; customer_id: number; created_by: number; status: string; created_at: string; items: Array<{ product_id: number; product_name: string; quantity: number; unit_price: number }> }>(`/orders/${orderId}`) }
+export async function getOrder(orderId: number) { return api<{ order_id: number; customer_id: number; created_by: number; status: string; created_at: string; items: Array<{ product_id: number; product_name: string; quantity: number; unit_price: number }>; fefo_allocations: Array<{ product_id: number; product_name: string; allocations: Array<{ inventory_id: number; batch_id: number; batch_number: string; quantity: number; expiry_date: string }> }> }>(`/orders/${orderId}`) }
 export async function getOrders() { return api<{ orders: SalesOrder[] }>('/orders/') }
 export async function getWarehouseRequests() { return api<{ requests: Array<{ request_id: number; product_id: number; product_name: string; quantity: number; status: string; requested_by: number; created_at: string }> }>('/orders/warehouse-requests') }
 export async function requestWarehouseStock(input: { product_id: number; quantity: number }) { return api<Record<string, unknown>>('/orders/warehouse-requests', { method: 'POST', body: JSON.stringify(input) }) }
@@ -132,8 +145,8 @@ export async function approveOrder(orderId: number) { return api<Record<string, 
 export async function rejectOrder(orderId: number) { return api<Record<string, unknown>>(`/orders/${orderId}/reject`, { method: 'PATCH' }) }
 export async function fulfillOrder(orderId: number) { return api<Record<string, unknown>>(`/orders/${orderId}/fulfill`, { method: 'PATCH' }) }
 export async function confirmOrderReceipt(orderId: number) { return api<Record<string, unknown>>(`/orders/${orderId}/confirm-receipt`, { method: 'PATCH' }) }
-export async function getInventoryAdditionRequests() { return api<{ requests: Array<{ request_id: number; product_id: number; product_name: string; quantity: number; status: string; requested_by: number; created_at: string }> }>('/inventory/addition-requests') }
-export async function createInventoryAdditionRequest(input: { product_name: string; quantity: number; batch_number: string; manufacturing_date: string; expiry_date: string }) { return api<Record<string, unknown>>('/inventory/addition-requests', { method: 'POST', body: JSON.stringify(input) }) }
+export async function getInventoryAdditionRequests() { return api<{ requests: Array<{ request_id: number; product_id: number; product_name: string; quantity: number; boxed_units: number; status: string; requested_by: number; created_at: string }> }>('/inventory/addition-requests') }
+export async function createInventoryAdditionRequest(input: { product_name: string; category: string; quantity: number; units_per_box: number; boxed_units: number; unit_price: number; box_unit_cost: number; scanned_codes?: string[]; batch_number: string; manufacturing_date: string; expiry_date: string }) { return api<Record<string, unknown>>('/inventory/addition-requests', { method: 'POST', body: JSON.stringify(input) }) }
 export async function approveInventoryAddition(requestId: number) { return api<Record<string, unknown>>(`/inventory/addition-requests/${requestId}/approve`, { method: 'PATCH' }) }
 export async function rejectInventoryAddition(requestId: number) { return api<Record<string, unknown>>(`/inventory/addition-requests/${requestId}/reject`, { method: 'PATCH' }) }
 export async function receivePurchaseOrder(purchaseOrderId: number, input: { warehouse_id: number; items: Array<{ product_id?: number; product_name?: string; quantity: number; batch_number: string; manufacturing_date: string; expiry_date: string }> }) { return api<Record<string, unknown>>(`/purchase-orders/${purchaseOrderId}/receive`, { method: 'PATCH', body: JSON.stringify(input) }) }

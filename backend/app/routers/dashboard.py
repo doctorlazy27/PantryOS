@@ -1,4 +1,4 @@
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
@@ -10,8 +10,11 @@ from app.models.inventory import Inventory
 from app.models.notification import Notification
 from app.models.message import Message
 from app.models.order import SalesOrder
+from app.models.order_item import SalesOrderItem
 from app.models.product import Product
 from app.models.purchase_order import PurchaseOrder
+from app.services.expiry import process_expiry
+from app.services.intelligence import calculate_inventory_intelligence
 
 
 router = APIRouter(
@@ -27,6 +30,7 @@ def get_dashboard(
         require_permission("view_activity")
     )
 ):
+    process_expiry(db)
     total_products = db.query(Product).count()
     warehouse_id = current_user.get("warehouse_id")
     total_inventory_records = db.query(Inventory).filter(Inventory.warehouse_id == warehouse_id).count()
@@ -110,6 +114,8 @@ def get_dashboard(
             "expiry_date": batch.expiry_date
         })
 
+    intelligence = calculate_inventory_intelligence(db, warehouse_id, today)
+
     return {
         "total_products": total_products,
         "total_inventory_records": total_inventory_records,
@@ -119,4 +125,5 @@ def get_dashboard(
         "unread_notifications": unread_notifications,
         "low_stock_products": low_stock_products,
         "expiring_batches": expiring_items
+        ,"inventory_intelligence": intelligence
     }

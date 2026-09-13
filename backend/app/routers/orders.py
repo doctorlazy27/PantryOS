@@ -17,6 +17,7 @@ from app.services.activity import log_activity
 from app.services.notification import create_notification, notify_roles
 from app.models.warehouse_request import WarehouseRequest
 from app.models.salesperson_inventory import SalespersonInventory
+from app.models.inventory_movement import InventoryMovement
 from app.schemas.warehouse_request import WarehouseRequestCreate
 
 
@@ -24,6 +25,31 @@ router = APIRouter(
     prefix="/orders",
     tags=["Orders"]
 )
+
+
+def _fefo_plan(db: Session, product_id: int, warehouse_id: int, quantity: int, lock: bool = False) -> list[dict]:
+    query = db.query(Inventory, Batch).join(
+        Batch, Inventory.batch_id == Batch.batch_id
+    ).filter(
+        Inventory.product_id == product_id,
+        Inventory.warehouse_id == warehouse_id,
+        Inventory.quantity > 0,
+        Batch.expiry_date >= date.today(),
+    ).order_by(Batch.expiry_date.asc())
+    if lock:
+        query = query.with_for_update()
+    rows = query.all()
+    if sum(row.quantity for row, _batch in rows) < quantity:
+        return []
+    remaining = quantity
+    plan = []
+    for inventory, batch in rows:
+        picked = min(inventory.quantity, remaining)
+        plan.append({"inventory_id": inventory.inventory_id, "batch_id": batch.batch_id, "batch_number": batch.batch_number, "quantity": picked, "expiry_date": batch.expiry_date})
+        remaining -= picked
+        if remaining == 0:
+            break
+    return plan
 
 
 @router.get("/warehouse-requests")
@@ -115,6 +141,17 @@ def approve_warehouse_request(
     for inventory in inventory_rows:
         deduction = min(inventory.quantity, remaining)
         inventory.quantity -= deduction
+        db.add(InventoryMovement(
+            inventory_id=inventory.inventory_id,
+            product_id=inventory.product_id,
+            batch_id=inventory.batch_id,
+            warehouse_id=inventory.warehouse_id,
+            movement_type="ISSUED",
+            quantity=deduction,
+            actor_id=current_user["user_id"],
+            actor_name=current_user["username"],
+            reason=f"Warehouse request #{item.request_id} approved using FEFO.",
+        ))
         remaining -= deduction
         if remaining == 0:
             break
@@ -420,7 +457,15 @@ def get_order(
                 "unit_price": item.unit_price
             }
             for item, product_name in items
-        ]
+        ],
+        "fefo_allocations": [
+            {
+                "product_id": item.product_id,
+                "product_name": product_name,
+                "allocations": _fefo_plan(db, item.product_id, order.warehouse_id, item.quantity),
+            }
+            for item, product_name in items
+        ] if order.status == OrderStatus.APPROVED.value else [],
     }
 
 @router.patch("/{order_id}/fulfill")
@@ -464,28 +509,25 @@ def fulfill_order(
 
     allocations = []
     for product_id, requested_quantity in requested_quantities.items():
-        inventory_rows = db.query(Inventory).join(
-            Batch, Inventory.batch_id == Batch.batch_id
-        ).filter(
-            Inventory.product_id == product_id,
-            Inventory.warehouse_id == current_user.get("warehouse_id"),
-            Inventory.quantity > 0,
-            Batch.expiry_date >= date.today(),
-        ).order_by(Batch.expiry_date.asc()).with_for_update().all()
-
-        if sum(row.quantity for row in inventory_rows) < requested_quantity:
+        plan = _fefo_plan(db, product_id, current_user.get("warehouse_id"), requested_quantity, lock=True)
+        if not plan:
             raise HTTPException(status_code=400, detail=f"Insufficient unexpired stock for product {product_id}")
+        inventory_by_id = {row.inventory_id: row for row in db.query(Inventory).filter(Inventory.inventory_id.in_([entry["inventory_id"] for entry in plan])).with_for_update().all()}
+        allocations.extend((inventory_by_id[entry["inventory_id"]], entry["quantity"], entry) for entry in plan)
 
-        remaining = requested_quantity
-        for inventory in inventory_rows:
-            deduction = min(inventory.quantity, remaining)
-            allocations.append((inventory, deduction))
-            remaining -= deduction
-            if remaining == 0:
-                break
-
-    for inventory, deduction in allocations:
+    for inventory, deduction, plan_entry in allocations:
         inventory.quantity -= deduction
+        db.add(InventoryMovement(
+            inventory_id=inventory.inventory_id,
+            product_id=inventory.product_id,
+            batch_id=inventory.batch_id,
+            warehouse_id=inventory.warehouse_id,
+            movement_type="SOLD",
+            quantity=deduction,
+            actor_id=current_user["user_id"],
+            actor_name=current_user["username"],
+            reason=f"Sales order #{order.order_id} fulfilled using FEFO batch {plan_entry['batch_number']}.",
+        ))
 
     order.status = OrderStatus.FULFILLED.value
     create_notification(
@@ -495,6 +537,7 @@ def fulfill_order(
         message=f"Sales order #{order.order_id} was fulfilled.",
         notification_type="order_fulfilled",
     )
+    log_activity(db, current_user["user_id"], current_user["username"], "fulfill_order", f"Fulfilled sales order #{order.order_id} using FEFO allocation.")
 
     db.commit()
     db.refresh(order)
@@ -503,7 +546,11 @@ def fulfill_order(
         "message": "Order fulfilled successfully",
         "order_id": order.order_id,
         "status": order.status,
-        "fulfilled_by": current_user["username"]
+        "fulfilled_by": current_user["username"],
+        "fefo_allocations": [
+            {"inventory_id": inventory.inventory_id, "batch_id": inventory.batch_id, "quantity": deduction, "batch_number": plan_entry["batch_number"], "expiry_date": plan_entry["expiry_date"]}
+            for inventory, deduction, plan_entry in allocations
+        ]
     }
 
 

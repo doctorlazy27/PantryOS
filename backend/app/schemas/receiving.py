@@ -7,6 +7,11 @@ class ReceiveItem(BaseModel):
     product_id: int | None = None
     product_name: str | None = Field(default=None, min_length=1, max_length=100)
     quantity: int = Field(gt=0)
+    units_per_box: int = Field(default=1, ge=1)
+    boxed_units: int = Field(default=0, ge=0)
+    unit_price: float = Field(default=0, ge=0)
+    box_unit_cost: float = Field(default=0, ge=0)
+    scanned_codes: list[str] = Field(default_factory=list)
     batch_number: str
     manufacturing_date: date
     expiry_date: date

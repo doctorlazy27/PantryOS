@@ -12,7 +12,7 @@ import { approveOrder, approveRegistration, approveTransfer, AuthUser, confirmIn
 
 type View = 'Overview' | 'Inventory' | 'Orders' | 'Receiving' | 'Transfers' | 'Invoices' | 'Team' | 'Notifications'
 const roleName: Record<Role, string> = { manager: 'Manager', warehouse_worker: 'Warehouse worker', salesperson: 'Salesperson' }
-const demoDashboard: DashboardData = { total_products: 0, total_inventory_records: 0, pending_sales_orders: 0, approved_sales_orders: 0, pending_purchase_orders: 0, unread_notifications: 0, low_stock_products: [], expiring_batches: [] }
+const demoDashboard: DashboardData = { total_products: 0, total_inventory_records: 0, pending_sales_orders: 0, approved_sales_orders: 0, pending_purchase_orders: 0, unread_notifications: 0, low_stock_products: [], expiring_batches: [], inventory_intelligence: [] }
 
 function App() {
   const [user, setUser] = useState<AuthUser | null>(null); const [checking, setChecking] = useState(true); const [view, setView] = useState<View>('Overview'); const [toast, setToast] = useState(''); const [menu, setMenu] = useState(false); const [confirmSignout, setConfirmSignout] = useState(false)
