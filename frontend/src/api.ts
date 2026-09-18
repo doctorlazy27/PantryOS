@@ -89,7 +89,7 @@ export async function login(username: string, password: string) {
 }
 
 export async function register(input: { username: string; full_name: string; password: string; role: Role; warehouse_id?: number; warehouse_name?: string }) {
-  return api<{ message: string; request_id: number; username: string; role: Role; status: string }>('/auth/register', {
+  return api<{ message: string; request_id?: number; user_id?: number; username: string; role: Role; warehouse_id?: number; status: string }>('/auth/register', {
     method: 'POST',
     body: JSON.stringify(input),
   })

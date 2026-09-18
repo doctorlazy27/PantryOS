@@ -2,6 +2,7 @@ from datetime import datetime
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.auth.roles import UserRole
@@ -48,17 +49,58 @@ def register_user(
         RegistrationRequest.username == user.username
     ).first()
 
+    if existing_user:
+        raise HTTPException(
+            status_code=409,
+            detail="Username already belongs to an active account",
+        )
+
+    if existing_request and existing_request.status != "rejected":
+        raise HTTPException(
+            status_code=409,
+            detail=f"A registration request for this username is already {existing_request.status}",
+        )
+
     warehouse = db.query(Warehouse).filter(Warehouse.warehouse_id == user.warehouse_id).first() if user.warehouse_id else None
     if warehouse is None and user.warehouse_name:
         warehouse = db.query(Warehouse).filter(Warehouse.name.ilike(user.warehouse_name.strip())).first()
-    if warehouse is None:
-        raise HTTPException(status_code=400, detail="Selected warehouse does not exist")
-
-    if existing_user or (existing_request and existing_request.status == "pending"):
-        raise HTTPException(
-            status_code=400,
-            detail="Username already exists"
+    if warehouse is None and user.role == UserRole.MANAGER and user.warehouse_name:
+        warehouse = Warehouse(
+            name=user.warehouse_name.strip(),
+            location=user.warehouse_name.strip(),
         )
+        db.add(warehouse)
+        db.flush()
+
+        new_manager = User(
+            username=user.username,
+            full_name=user.full_name,
+            role=user.role.value,
+            password_hash=hash_password(user.password),
+            warehouse_id=warehouse.warehouse_id,
+        )
+        db.add(new_manager)
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            raise HTTPException(status_code=409, detail="Username already exists")
+        db.refresh(new_manager)
+        return {
+            "message": "Warehouse created and manager account activated",
+            "user_id": new_manager.user_id,
+            "username": new_manager.username,
+            "role": new_manager.role,
+            "warehouse_id": new_manager.warehouse_id,
+            "status": "approved",
+        }
+    if warehouse is None:
+        if user.role == UserRole.MANAGER and user.warehouse_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Warehouse ID does not exist. To create a new warehouse, enter its name instead of an ID.",
+            )
+        raise HTTPException(status_code=400, detail="Selected warehouse does not exist")
 
     if existing_request and existing_request.status == "rejected":
         existing_request.full_name = user.full_name
@@ -90,7 +132,11 @@ def register_user(
     )
 
     db.add(request)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="A registration request for this username already exists")
     db.refresh(request)
 
     return {

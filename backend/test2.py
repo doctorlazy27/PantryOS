@@ -1,0 +1,5 @@
+import psycopg
+conn = psycopg.connect('postgresql://postgres:2JI23CS123@localhost:5432/warehouse_db')
+cur = conn.execute("SELECT * FROM alembic_version;")
+for row in cur.fetchall():
+    print(row)
