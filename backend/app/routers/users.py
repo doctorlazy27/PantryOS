@@ -14,6 +14,12 @@ from app.models.stock_transfer import StockTransfer
 from app.models.user import User
 from app.models.auth_session import AuthSession
 from app.models.message import Message
+from app.models.counter_allocation import CounterAllocation
+from app.models.counter_sale import CounterSale
+from app.models.inventory_addition_request import InventoryAdditionRequest
+from app.models.warehouse_request import WarehouseRequest
+from app.models.inventory_movement import InventoryMovement
+from app.models.inventory_recommendation import InventoryRecommendation
 from app.schemas.user import UserDelete
 
 
@@ -61,7 +67,7 @@ def remove_user(
         if user.role != "manager":
             raise HTTPException(status_code=403, detail="Only manager accounts can self-delete")
 
-        manager_count = db.query(User).filter(User.role == "manager").count()
+        manager_count = db.query(User).filter(User.role == "manager", User.warehouse_id == current_user.get("warehouse_id")).count()
         if manager_count <= 1:
             raise HTTPException(
                 status_code=400,
@@ -75,6 +81,7 @@ def remove_user(
     if user_id == current_user["user_id"]:
         history_owner = db.query(User).filter(
             User.role == "manager",
+            User.warehouse_id == current_user.get("warehouse_id"),
             User.user_id != user_id,
         ).first()
         if history_owner is None:
@@ -90,6 +97,33 @@ def remove_user(
     )
     db.query(StockTransfer).filter(StockTransfer.created_by == user_id).update(
         {StockTransfer.created_by: history_owner_id}, synchronize_session=False
+    )
+    db.query(CounterAllocation).filter(CounterAllocation.requested_by == user_id).update(
+        {CounterAllocation.requested_by: history_owner_id}, synchronize_session=False
+    )
+    db.query(CounterSale).filter(CounterSale.worker_id == user_id).update(
+        {CounterSale.worker_id: history_owner_id}, synchronize_session=False
+    )
+    db.query(InventoryAdditionRequest).filter(InventoryAdditionRequest.requested_by == user_id).update(
+        {InventoryAdditionRequest.requested_by: history_owner_id}, synchronize_session=False
+    )
+    db.query(WarehouseRequest).filter(WarehouseRequest.requested_by == user_id).update(
+        {WarehouseRequest.requested_by: history_owner_id}, synchronize_session=False
+    )
+    db.query(InventoryMovement).filter(InventoryMovement.actor_id == user_id).update(
+        {InventoryMovement.actor_id: None}, synchronize_session=False
+    )
+    db.query(InventoryRecommendation).filter(InventoryRecommendation.reviewed_by == user_id).update(
+        {InventoryRecommendation.reviewed_by: None}, synchronize_session=False
+    )
+    db.query(CounterAllocation).filter(CounterAllocation.reviewed_by == user_id).update(
+        {CounterAllocation.reviewed_by: None}, synchronize_session=False
+    )
+    db.query(WarehouseRequest).filter(WarehouseRequest.approved_by == user_id).update(
+        {WarehouseRequest.approved_by: None}, synchronize_session=False
+    )
+    db.query(SalesOrder).filter(SalesOrder.confirmed_by == user_id).update(
+        {SalesOrder.confirmed_by: None}, synchronize_session=False
     )
     db.query(Invoice).filter(Invoice.sent_by == user_id).update(
         {Invoice.sent_by: None}, synchronize_session=False

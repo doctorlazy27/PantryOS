@@ -15,6 +15,9 @@ class Product(Base):
 
     name: Mapped[str] = mapped_column(String(100))
     category: Mapped[str] = mapped_column(String(100))
+    storage_section: Mapped[str] = mapped_column(String(100), nullable=False, default="General")
+    shelf_number: Mapped[str] = mapped_column(String(50), nullable=False, default="Unassigned")
+    aisle: Mapped[str] = mapped_column(String(50), nullable=False, default="Unassigned")
     quantity: Mapped[int] = mapped_column(Integer)
     unit: Mapped[str] = mapped_column(String(50))
     price: Mapped[float] = mapped_column(Float)

@@ -12,6 +12,9 @@ from app.models.inventory import Inventory
 from app.models.inventory_movement import InventoryMovement
 from app.models.notification import Notification
 from app.models.inventory_recommendation import InventoryRecommendation
+from app.models.counter_inventory import CounterInventory
+from app.models.counter_allocation import CounterAllocation
+from app.models.counter_sale import CounterSale, CounterSaleItem
 
 config = context.config
 load_dotenv()

@@ -21,6 +21,8 @@ def create_batch(
     db: Session = Depends(get_db),
     current_user: dict = Depends(require_permission("receive_purchase_orders"))
 ):
+    if batch.expiry_date <= batch.manufacturing_date:
+        raise HTTPException(status_code=400, detail="Expiry date must be after manufacturing date")
     if batch.expiry_date <= date.today():
         raise HTTPException(status_code=400, detail="Cannot create an already expired batch")
     new_batch = Batch(

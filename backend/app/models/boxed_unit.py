@@ -14,4 +14,5 @@ class BoxedUnit(Base):
     box_code: Mapped[str] = mapped_column(String(36), unique=True, nullable=False, default=lambda: str(uuid4()))
     scanned_code: Mapped[str | None] = mapped_column(String(120), nullable=True)
     units: Mapped[int] = mapped_column(Integer, nullable=False)
+    remaining_units: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     unit_cost: Mapped[float] = mapped_column(Float, nullable=False, default=0)

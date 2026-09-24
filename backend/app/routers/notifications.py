@@ -16,10 +16,8 @@ router = APIRouter(
 
 
 def allowed_recipient_roles(role: str) -> set[str]:
-    if role == "warehouse_worker":
-        return {"salesperson"}
-    if role in {"salesperson", "manager"}:
-        return {"manager", "warehouse_worker"} if role == "salesperson" else {"salesperson", "warehouse_worker"}
+    if role in {"warehouse_worker", "manager"}:
+        return {"manager", "warehouse_worker"}
     return set()
 
 
@@ -62,7 +60,7 @@ def get_my_messages(
                 "is_read": message.is_read,
                 "created_at": message.created_at,
                 "reply_to_id": message.reply_to_id,
-                "can_reply": current_user["role"] == "salesperson" and sender.role == "warehouse_worker",
+                "can_reply": sender.role in {"manager", "warehouse_worker"},
             }
             for message, sender in messages
         ]
@@ -83,14 +81,14 @@ def send_message(
         if original is None:
             raise HTTPException(status_code=404, detail="Message to reply to was not found")
         original_message, original_sender = original
-        if current_user["role"] != "salesperson" or original_sender.role != "warehouse_worker":
-            raise HTTPException(status_code=403, detail="Only a salesperson can reply to a worker message")
+        if current_user["role"] not in {"manager", "warehouse_worker"} or original_sender.role not in {"manager", "warehouse_worker"}:
+            raise HTTPException(status_code=403, detail="Only warehouse users can reply to warehouse messages")
         recipient_ids = [original_message.sender_id]
     elif message.broadcast:
         if current_user["role"] != "manager":
             raise HTTPException(status_code=403, detail="Only managers can send broadcast messages")
         recipient_ids = [user.user_id for user in db.query(User).filter(
-            User.role.in_({"salesperson", "warehouse_worker"}),
+            User.role.in_({"manager", "warehouse_worker"}),
             User.user_id != current_user["user_id"],
             User.warehouse_id == current_user.get("warehouse_id"),
         ).all()]

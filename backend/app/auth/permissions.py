@@ -21,6 +21,12 @@ PERMISSIONS = {
         "approve_inventory_requests",
         "view_inventory_recommendations",
         "review_inventory_recommendations",
+        "create_purchase_orders",
+        "view_counter_inventory",
+        "view_counter_sales",
+        "request_counter_allocation",
+        "approve_counter_allocation",
+        "checkout_counter",
     },
 
     UserRole.WAREHOUSE_WORKER: {
@@ -41,27 +47,9 @@ PERMISSIONS = {
     "receive_purchase_orders",
     "send_messages",
     "submit_inventory_requests",
+    "checkout_counter",
 },
 
-    UserRole.SALESPERSON: {
-        "view_suppliers",
-        "view_warehouses",
-        "view_orders",
-        "view_activity",
-        "view_inventory",
-        "view_customers",
-        "create_orders",
-        "request_warehouse_stock",
-        "request_stock",
-        "view_own_orders",
-        "view_order_status",
-        "create_purchase_orders",
-        "request_stock_transfer",
-        "process_stock_transfer",
-        "send_invoices",
-        "send_messages",
-        "confirm_order_receipt",
-    },
 }
 
 

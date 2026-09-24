@@ -20,5 +20,6 @@ def create_boxed_units(
             box_code=str(uuid4()),
             scanned_code=codes[index] if index < len(codes) else None,
             units=units_per_box,
+            remaining_units=units_per_box,
             unit_cost=unit_cost,
         ))

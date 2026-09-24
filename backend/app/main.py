@@ -41,10 +41,12 @@ from app.models.salesperson_inventory import SalespersonInventory
 from app.routers.notifications import router as notifications_router
 from app.models.invoice import Invoice
 from app.models.auth_session import AuthSession
+from app.models.auth_otp import AuthOtp
 from app.routers.invoices import router as invoices_router
 from app.routers.internal_jobs import router as internal_jobs_router
 from app.models.inventory_recommendation import InventoryRecommendation
 from app.routers.recommendations import router as recommendations_router
+from app.routers.counter import router as counter_router
 from app.services.expiry import process_expiry
 from app.routers.dashboard import router as dashboard_router
 def run_expiry_job() -> None:
@@ -101,16 +103,14 @@ app.include_router(warehouses_router)
 app.include_router(inventory_router)
 app.include_router(batches_router)
 app.include_router(users_router)
-app.include_router(customers_router)
-app.include_router(orders_router)
 app.include_router(suppliers_router)
 app.include_router(purchase_orders_router)
 app.include_router(activity_router)
 app.include_router(notifications_router)
-app.include_router(invoices_router)
 app.include_router(dashboard_router)
 app.include_router(internal_jobs_router)
 app.include_router(recommendations_router)
+app.include_router(counter_router)
 
 @app.get("/")
 def root():

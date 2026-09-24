@@ -12,6 +12,3 @@ class InventoryAdditionRequestCreate(BaseModel):
     unit_price: float = Field(default=0, ge=0)
     box_unit_cost: float = Field(default=0, ge=0)
     scanned_codes: list[str] = Field(default_factory=list)
-    batch_number: str = Field(min_length=1, max_length=100)
-    manufacturing_date: date
-    expiry_date: date

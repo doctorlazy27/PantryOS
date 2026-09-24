@@ -6,6 +6,9 @@ class ProductCreate(BaseModel):
     product_id: int | None = None
     name: str
     category: str
+    storage_section: str = Field(default="General", min_length=1, max_length=100)
+    shelf_number: str = Field(default="Unassigned", min_length=1, max_length=50)
+    aisle: str = Field(default="Unassigned", min_length=1, max_length=50)
     quantity: int = Field(ge=0)
     unit: str
     price: float = Field(ge=0)

@@ -24,6 +24,37 @@ router = APIRouter(
     tags=["Purchase Orders"]
 )
 
+@router.get("/")
+def list_purchase_orders(
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(require_permission("view_inventory")),
+):
+    rows = db.query(PurchaseOrder, Supplier).join(
+        Supplier, PurchaseOrder.supplier_id == Supplier.supplier_id
+    ).filter(
+        PurchaseOrder.warehouse_id == current_user.get("warehouse_id")
+    ).order_by(PurchaseOrder.created_at.desc()).all()
+    return {
+        "purchase_orders": [
+            {
+                "purchase_order_id": order.purchase_order_id,
+                "supplier_name": supplier.name,
+                "warehouse_id": order.warehouse_id,
+                "status": order.status,
+                "created_at": order.created_at,
+                "items": [
+                    {
+                        "product_id": item.product_id,
+                        "product_name": db.query(Product.name).filter(Product.product_id == item.product_id).scalar(),
+                        "quantity": item.quantity,
+                    }
+                    for item in db.query(PurchaseOrderItem).filter(PurchaseOrderItem.purchase_order_id == order.purchase_order_id).all()
+                ],
+            }
+            for order, supplier in rows
+        ]
+    }
+
 @router.patch("/{purchase_order_id}/receive")
 def receive_purchase_order(
     purchase_order_id: int,

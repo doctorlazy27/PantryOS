@@ -9,7 +9,9 @@ export default function InventoryOverview({ role, onToast }: Props) {
   const [expiring, setExpiring] = useState<Awaited<ReturnType<typeof getExpiringInventory>>['items']>([])
   const [expired, setExpired] = useState<Awaited<ReturnType<typeof getExpiredInventory>>['items']>([])
   const [intelligence, setIntelligence] = useState<DashboardData['inventory_intelligence']>([])
+  const [lowStock, setLowStock] = useState<DashboardData['low_stock_products']>([])
   const [expiryFilter, setExpiryFilter] = useState<'all' | '7' | '3' | '1' | 'expired'>('all')
+  const [sectionFilter, setSectionFilter] = useState('all')
 
   const load = async () => {
     try {
@@ -21,6 +23,7 @@ export default function InventoryOverview({ role, onToast }: Props) {
       setExpiring(expiringResult.items)
       setExpired(expiredResult.items)
       setIntelligence(dashboard.inventory_intelligence)
+      setLowStock(dashboard.low_stock_products)
     } catch (error) {
       onToast(error instanceof Error ? error.message : 'Could not load inventory')
     }
@@ -44,20 +47,22 @@ export default function InventoryOverview({ role, onToast }: Props) {
       stockStatus: stock <= product.reorder_level ? 'LOW' : 'GOOD',
     }
   })
-  const categories = [...new Set(rows.map(({ product }) => product.category))]
+  const sections = [...new Set(rows.map(({ product }) => product.storage_section || product.category))]
+  const visibleRows = sectionFilter === 'all' ? rows : rows.filter(({ product }) => (product.storage_section || product.category) === sectionFilter)
   const visibleExpiring = expiryFilter === 'expired'
     ? []
     : expiring.filter((item) => expiryFilter === 'all' || item.days_remaining <= Number(expiryFilter))
 
   return <>
+    <section className="panel low-stock-panel"><div className="table-toolbar"><div><p className="eyebrow">Replenishment queue</p><h2>Low stock</h2></div><span className="table-count">{lowStock.length} products need attention</span></div>{lowStock.length ? <div className="low-stock-list">{lowStock.map((item) => <div className="low-stock-item" key={item.product_id}><div><strong>{item.name}</strong><span>{item.current_quantity} {item.unit} available · reorder at {item.reorder_level}</span></div><span className="pill urgent">REFILL</span></div>)}</div> : <p className="field-hint">All tracked products are above their reorder level.</p>}</section>
     <section className="panel data-panel">
-      <div className="table-toolbar"><div><p className="eyebrow">Warehouse inventory</p><h2>Food sections</h2></div><button className="button subtle" onClick={() => void load()}>Refresh</button></div>
+      <div className="table-toolbar"><div><p className="eyebrow">Warehouse inventory</p><h2>Food sections</h2></div><div className="module-actions"><select value={sectionFilter} onChange={(event) => setSectionFilter(event.target.value)} aria-label="Filter inventory section"><option value="all">All sections</option>{sections.map((section) => <option key={section} value={section}>{section}</option>)}</select><button className="button subtle" onClick={() => void load()}>Refresh</button></div></div>
       {role === 'warehouse_worker' && <p className="field-hint">Stock is grouped by food section. Submit an inventory request below to add boxed units.</p>}
-      {rows.length ? <div className="inventory-sections">{categories.map((category) => <section className="inventory-section" key={category}>
-        <h3>{category}</h3>
-        <div className="data-table"><div className="data-head"><span>Product</span><span>Units</span><span>Boxed units</span><span>Stock</span><span>Expiry</span><span>Per-unit cost</span><span>Total box cost</span><span>Box IDs</span></div>
-          {rows.filter(({ product }) => product.category === category).map(({ product, stock, boxes, unitCost, boxCost, nearestDays, stockStatus }) => <div className="data-row" key={product.product_id}>
-            <strong>{product.name}</strong><span>{stock} {product.unit}</span><span>{boxes}</span><span>{stockStatus}</span><span>{nearestDays === null ? 'ACTIVE' : `${nearestDays} days`}</span><span>${Number(unitCost).toFixed(2)}</span><span>${Number(boxCost).toFixed(2)}</span><span>{inventory.filter((item) => item.product_id === product.product_id).reduce((total, item) => total + item.boxed_unit_ids.length, 0)} generated</span>
+      {visibleRows.length ? <div className="inventory-sections">{sections.filter((section) => sectionFilter === 'all' || section === sectionFilter).map((section) => <section className="inventory-section" key={section}>
+        <h3>{section}</h3>
+        <div className="data-table"><div className="data-head"><span>Product</span><span>Aisle</span><span>Shelf</span><span>Units</span><span>Boxed units</span><span>Stock</span><span>Expiry</span><span>Per-unit cost</span><span>Total box cost</span><span>Box IDs</span></div>
+          {visibleRows.filter(({ product }) => (product.storage_section || product.category) === section).sort((left, right) => `${left.product.aisle} ${left.product.shelf_number} ${left.product.name}`.localeCompare(`${right.product.aisle} ${right.product.shelf_number} ${right.product.name}`)).map(({ product, stock, boxes, unitCost, boxCost, nearestDays, stockStatus }) => <div className="data-row" key={product.product_id}>
+            <strong>{product.name}</strong><span>{product.aisle || 'Unassigned'}</span><span>{product.shelf_number || 'Unassigned'}</span><span>{stock} {product.unit}</span><span>{boxes}</span><span>{stockStatus}</span><span>{nearestDays === null ? 'ACTIVE' : `${nearestDays} days`}</span><span>${Number(unitCost).toFixed(2)}</span><span>${Number(boxCost).toFixed(2)}</span><span>{inventory.filter((item) => item.product_id === product.product_id).reduce((total, item) => total + item.boxed_unit_ids.length, 0)} generated</span>
           </div>)}
         </div>
       </section>)}</div> : <p className="field-hint">No products have been added yet.</p>}

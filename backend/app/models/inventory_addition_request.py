@@ -11,7 +11,7 @@ class InventoryAdditionRequest(Base):
 
     request_id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     product_id: Mapped[int] = mapped_column(ForeignKey("products.product_id"), nullable=False)
-    batch_id: Mapped[int] = mapped_column(ForeignKey("batches.batch_id"), nullable=False)
+    batch_id: Mapped[int | None] = mapped_column(ForeignKey("batches.batch_id"), nullable=True)
     warehouse_id: Mapped[int] = mapped_column(ForeignKey("warehouses.warehouse_id"), nullable=False, index=True)
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)
     category: Mapped[str] = mapped_column(String(100), nullable=False, default="General")

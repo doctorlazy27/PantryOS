@@ -1,4 +1,10 @@
 import datetime
+import sys
+
+if "pytest" in sys.modules:
+    import pytest
+    pytest.skip("Manual destructive database script; run explicitly only against a disposable database.", allow_module_level=True)
+
 from sqlalchemy import create_engine
 import sqlalchemy
 from sqlalchemy.orm import sessionmaker
