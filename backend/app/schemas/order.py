@@ -9,4 +9,4 @@ class OrderItemCreate(BaseModel):
 class SalesOrderCreate(BaseModel):
     customer_id: int | None = None
     customer_name: str | None = Field(default=None, min_length=1, max_length=150)
-    items: list[OrderItemCreate]
+    items: list[OrderItemCreate] = Field(min_length=1)

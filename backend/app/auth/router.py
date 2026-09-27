@@ -98,8 +98,8 @@ def register_user(
 ):
     email = user.email.strip().lower()
     _consume_otp(db, email, "signup", user.otp)
-    if user.role not in {UserRole.MANAGER, UserRole.WAREHOUSE_WORKER}:
-        raise HTTPException(status_code=400, detail="Only manager and warehouse worker accounts are supported")
+    if user.role not in set(UserRole):
+        raise HTTPException(status_code=400, detail="Only manager and warehouse worker accounts can be created")
     existing_user = db.query(User).filter(User.email == email).first()
     existing_request = db.query(RegistrationRequest).filter(
         RegistrationRequest.email == email
@@ -171,7 +171,7 @@ def register_user(
         existing_request.requested_at = datetime.utcnow()
         existing_request.reviewed_at = None
         existing_request.reviewed_by = None
-        notify_roles(db, {"manager"}, "Worker account approval needed", f"{existing_request.full_name} requested warehouse access with {email}.", "registration_request", warehouse.warehouse_id)
+        notify_roles(db, {"manager"}, "Account approval needed", f"{existing_request.full_name} requested warehouse access with {email}.", "registration_request", warehouse.warehouse_id)
         db.commit()
         db.refresh(existing_request)
         return {
@@ -196,7 +196,7 @@ def register_user(
     db.add(request)
     try:
         db.flush()
-        notify_roles(db, {"manager"}, "Worker account approval needed", f"{request.full_name} requested warehouse access with {email}.", "registration_request", warehouse.warehouse_id)
+        notify_roles(db, {"manager"}, "Account approval needed", f"{request.full_name} requested warehouse access with {email}.", "registration_request", warehouse.warehouse_id)
         db.commit()
     except IntegrityError:
         db.rollback()

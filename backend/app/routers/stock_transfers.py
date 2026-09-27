@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
+from sqlalchemy import or_
+from sqlalchemy.orm import Session, aliased
 
 from app.auth.dependencies import require_permission
 from app.database import get_db
@@ -7,6 +8,8 @@ from app.models.inventory import Inventory
 from app.models.inventory_movement import InventoryMovement
 from app.models.warehouse import Warehouse
 from app.models.stock_transfer import StockTransfer
+from app.models.product import Product
+from app.models.batch import Batch
 from app.schemas.stock_transfer import StockTransferCreate
 from app.auth.dependencies import require_permission
 from app.models.inventory import Inventory
@@ -20,6 +23,56 @@ router = APIRouter(
 )
 
 
+@router.get("/")
+def list_stock_transfers(
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(require_permission("view_stock_transfers")),
+):
+    source_warehouse = aliased(Warehouse)
+    destination_warehouse = aliased(Warehouse)
+    query = db.query(
+        StockTransfer,
+        Product.name,
+        Batch.batch_number,
+        source_warehouse.name,
+        destination_warehouse.name,
+    ).join(
+        Product, StockTransfer.product_id == Product.product_id
+    ).join(
+        Batch, StockTransfer.batch_id == Batch.batch_id
+    ).join(
+        source_warehouse, StockTransfer.source_warehouse_id == source_warehouse.warehouse_id
+    ).join(
+        destination_warehouse, StockTransfer.destination_warehouse_id == destination_warehouse.warehouse_id
+    )
+    if current_user["role"] == "manager":
+        warehouse_id = current_user.get("warehouse_id")
+        query = query.filter(or_(
+            StockTransfer.source_warehouse_id == warehouse_id,
+            StockTransfer.destination_warehouse_id == warehouse_id,
+        ))
+    else:
+        query = query.filter(
+            StockTransfer.created_by == current_user["user_id"],
+            StockTransfer.source_warehouse_id == current_user.get("warehouse_id"),
+        )
+    rows = query.order_by(StockTransfer.created_at.desc()).limit(100).all()
+    return {"transfers": [{
+        "transfer_id": transfer.transfer_id,
+        "product_id": transfer.product_id,
+        "product_name": product_name,
+        "batch_id": transfer.batch_id,
+        "batch_number": batch_number,
+        "source_warehouse_id": transfer.source_warehouse_id,
+        "source_warehouse_name": source_name,
+        "destination_warehouse_id": transfer.destination_warehouse_id,
+        "destination_warehouse_name": destination_name,
+        "quantity": transfer.quantity,
+        "status": transfer.status,
+        "created_at": transfer.created_at,
+    } for transfer, product_name, batch_number, source_name, destination_name in rows]}
+
+
 @router.patch("/{transfer_id}/approve")
 def approve_stock_transfer(
     transfer_id: int,
@@ -30,7 +83,7 @@ def approve_stock_transfer(
 ):
     transfer = db.query(StockTransfer).filter(
         StockTransfer.transfer_id == transfer_id
-    ).first()
+    ).with_for_update().first()
 
     if transfer is None:
         raise HTTPException(
@@ -74,7 +127,7 @@ def approve_stock_transfer(
         Inventory.product_id == transfer.product_id,
         Inventory.batch_id == transfer.batch_id,
         Inventory.warehouse_id == transfer.destination_warehouse_id
-    ).first()
+    ).with_for_update().first()
 
     source_inventory.quantity -= transfer.quantity
     db.add(InventoryMovement(
@@ -148,7 +201,7 @@ def create_stock_transfer(
             detail="Source and destination warehouses must be different"
         )
 
-    if current_user["role"] == "salesperson" and transfer.source_warehouse_id != current_user.get("warehouse_id"):
+    if transfer.source_warehouse_id != current_user.get("warehouse_id"):
         raise HTTPException(status_code=403, detail="You can only initiate transfers from your assigned warehouse")
 
     if db.query(Warehouse).filter(Warehouse.warehouse_id.in_([
@@ -217,7 +270,7 @@ def reject_stock_transfer(
 ):
     transfer = db.query(StockTransfer).filter(
         StockTransfer.transfer_id == transfer_id
-    ).first()
+    ).with_for_update().first()
 
     if transfer is None:
         raise HTTPException(

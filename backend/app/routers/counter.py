@@ -1,7 +1,9 @@
 from datetime import date, datetime
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException
+import logging
+
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.auth.dependencies import require_permission
@@ -19,8 +21,11 @@ from app.services.activity import log_activity
 from app.services.expiry import process_expiry
 from app.services.inventory_guard import require_available_batch
 from app.services.notification import create_notification, notify_roles
+from app.services.ai_assistant import answer_warehouse_question
+from app.services.ai_provider import AIProviderError
 
 router = APIRouter(prefix="/counter", tags=["Counter"])
+logger = logging.getLogger(__name__)
 
 
 def _counter_row(db: Session, row: CounterInventory):
@@ -79,7 +84,7 @@ def request_counter_allocation(request: CounterAllocationCreate, db: Session = D
 
 @router.patch("/allocations/{allocation_id}/approve")
 def approve_counter_allocation(allocation_id: int, db: Session = Depends(get_db), current_user: dict = Depends(require_permission("approve_counter_allocation"))):
-    allocation = db.query(CounterAllocation).filter(CounterAllocation.allocation_id == allocation_id, CounterAllocation.warehouse_id == current_user.get("warehouse_id"), CounterAllocation.status == "pending").first()
+    allocation = db.query(CounterAllocation).filter(CounterAllocation.allocation_id == allocation_id, CounterAllocation.warehouse_id == current_user.get("warehouse_id"), CounterAllocation.status == "pending").with_for_update().first()
     if allocation is None:
         raise HTTPException(status_code=404, detail="Pending counter allocation not found")
     remaining = allocation.quantity
@@ -126,6 +131,12 @@ def checkout(checkout: CheckoutCreate, db: Session = Depends(get_db), current_us
         counter, product, batch, _, warehouse_inventory = match
         prepared.append((counter, product, batch, warehouse_inventory, requested.quantity))
         total += requested.quantity * product.price
+    quantities_by_counter = {}
+    for counter, _, _, _, quantity in prepared:
+        quantities_by_counter[counter.counter_inventory_id] = (counter, quantities_by_counter.get(counter.counter_inventory_id, (counter, 0))[1] + quantity)
+    for counter, quantity in quantities_by_counter.values():
+        if counter.quantity < quantity:
+            raise HTTPException(status_code=400, detail=f"Insufficient counter stock for product {counter.product_id}")
     sale = CounterSale(warehouse_id=warehouse_id, bill_number=f"INV-{datetime.utcnow():%Y%m%d%H%M%S}-{uuid4().hex[:4].upper()}", total_amount=total, worker_id=current_user["user_id"])
     db.add(sale)
     db.flush()
@@ -160,7 +171,7 @@ def lookup_counter_barcode(barcode: str, db: Session = Depends(get_db), current_
 
 
 @router.get("/copilot")
-def warehouse_copilot(question: str = "What needs attention today?", db: Session = Depends(get_db), current_user: dict = Depends(require_permission("view_counter_inventory"))):
+def warehouse_copilot(question: str = Query(default="What needs attention today?", max_length=500), db: Session = Depends(get_db), current_user: dict = Depends(require_permission("view_ai_copilot"))):
     process_expiry(db)
     counter = db.query(CounterInventory).filter(CounterInventory.warehouse_id == current_user.get("warehouse_id")).all()
     low = [_counter_row(db, row) for row in counter if row.quantity < row.minimum_level]
@@ -169,4 +180,15 @@ def warehouse_copilot(question: str = "What needs attention today?", db: Session
     priorities.extend([f"{name} batch {batch} expires on {expiry.isoformat()}." for name, batch, expiry in expiring])
     if not priorities:
         priorities.append("No urgent counter or expiry risks are currently reported.")
-    return {"answer": f"For '{question}', I found {len(low)} counter replenishment item(s) and {len(expiring)} upcoming expiry item(s) in live warehouse data.", "priorities": priorities[:6]}
+    fallback_answer = f"For '{question}', I found {len(low)} counter replenishment item(s) and {len(expiring)} upcoming expiry item(s) in live warehouse data."
+    context = {
+        "counter_low_stock": low,
+        "upcoming_expiry": [{"product_name": name, "batch_number": batch, "expiry_date": expiry.isoformat()} for name, batch, expiry in expiring],
+        "priorities": priorities[:6],
+    }
+    answer = None
+    try:
+        answer = answer_warehouse_question(question, context)
+    except AIProviderError:
+        logger.exception("AI copilot unavailable for warehouse %s", current_user.get("warehouse_id"))
+    return {"answer": answer or fallback_answer, "priorities": priorities[:6], "ai_powered": bool(answer)}

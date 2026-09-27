@@ -67,7 +67,7 @@ def receive_purchase_order(
     purchase_order = db.query(PurchaseOrder).filter(
         PurchaseOrder.purchase_order_id == purchase_order_id,
         PurchaseOrder.warehouse_id == current_user.get("warehouse_id"),
-    ).first()
+    ).with_for_update().first()
 
     if purchase_order is None:
         raise HTTPException(
@@ -98,7 +98,9 @@ def receive_purchase_order(
     purchase_items = db.query(PurchaseOrderItem).filter(
         PurchaseOrderItem.purchase_order_id == purchase_order_id
     ).all()
-    ordered = {item.product_id: item.quantity for item in purchase_items}
+    ordered = {}
+    for item in purchase_items:
+        ordered[item.product_id] = ordered.get(item.product_id, 0) + item.quantity
     received = {}
     for item, product in resolved_items:
         received[product.product_id] = received.get(product.product_id, 0) + item.quantity

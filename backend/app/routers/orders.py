@@ -16,7 +16,6 @@ from app.models.customer import Customer
 from app.services.activity import log_activity
 from app.services.notification import create_notification, notify_roles
 from app.models.warehouse_request import WarehouseRequest
-from app.models.salesperson_inventory import SalespersonInventory
 from app.models.inventory_movement import InventoryMovement
 from app.schemas.warehouse_request import WarehouseRequestCreate
 
@@ -58,8 +57,6 @@ def list_warehouse_requests(
     current_user: dict = Depends(require_permission("view_orders")),
 ):
     query = db.query(WarehouseRequest).filter(WarehouseRequest.warehouse_id == current_user.get("warehouse_id"))
-    if current_user["role"] == "salesperson":
-        query = query.filter(WarehouseRequest.requested_by == current_user["user_id"])
     rows = query.order_by(WarehouseRequest.created_at.desc()).all()
     return {
         "requests": [
@@ -88,41 +85,9 @@ def request_warehouse_stock(
     item = WarehouseRequest(product_id=request.product_id, quantity=request.quantity, warehouse_id=current_user.get("warehouse_id"), requested_by=current_user["user_id"])
     db.add(item)
     db.flush()
-    notify_roles(db, {"warehouse_worker"}, "Stock request", f"Salesperson stock request #{item.request_id} needs action.", "warehouse_stock_request", current_user.get("warehouse_id"))
+    notify_roles(db, {"warehouse_worker"}, "Warehouse stock request", f"Stock request #{item.request_id} needs action.", "warehouse_stock_request", current_user.get("warehouse_id"))
     db.commit()
     return {"message": "Stock request sent to warehouse", "request_id": item.request_id, "status": item.status}
-
-
-@router.post("/sales")
-def create_sale_from_salesperson_stock(
-    order: SalesOrderCreate,
-    db: Session = Depends(get_db),
-    current_user: dict = Depends(require_permission("create_orders")),
-):
-    customer = db.query(Customer).filter(Customer.customer_id == order.customer_id).first() if order.customer_id else None
-    if customer is None and order.customer_name:
-        customer = Customer(name=order.customer_name.strip(), phone="Not provided")
-        db.add(customer)
-        db.flush()
-    if customer is None:
-        raise HTTPException(status_code=400, detail="Enter a customer name")
-    for item in order.items:
-        stock = db.query(SalespersonInventory).filter(
-            SalespersonInventory.salesperson_id == current_user["user_id"],
-            SalespersonInventory.product_id == item.product_id,
-        ).with_for_update().first()
-        if stock is None or stock.quantity < item.quantity:
-            raise HTTPException(status_code=400, detail=f"You do not have enough received stock for product {item.product_id}")
-    sale = SalesOrder(customer_id=customer.customer_id, created_by=current_user["user_id"], warehouse_id=current_user.get("warehouse_id"), status="confirmed")
-    db.add(sale)
-    db.flush()
-    for item in order.items:
-        stock = db.query(SalespersonInventory).filter(SalespersonInventory.salesperson_id == current_user["user_id"], SalespersonInventory.product_id == item.product_id).with_for_update().first()
-        stock.quantity -= item.quantity
-        product = db.query(Product).filter(Product.product_id == item.product_id).first()
-        db.add(SalesOrderItem(order_id=sale.order_id, product_id=item.product_id, quantity=item.quantity, unit_price=product.price))
-    db.commit()
-    return {"message": "Sale recorded", "order_id": sale.order_id, "status": sale.status}
 
 
 @router.patch("/warehouse-requests/{request_id}/approve")
@@ -131,7 +96,7 @@ def approve_warehouse_request(
     db: Session = Depends(get_db),
     current_user: dict = Depends(require_permission("approve_orders")),
 ):
-    item = db.query(WarehouseRequest).filter(WarehouseRequest.request_id == request_id, WarehouseRequest.warehouse_id == current_user.get("warehouse_id"), WarehouseRequest.status == "pending").first()
+    item = db.query(WarehouseRequest).filter(WarehouseRequest.request_id == request_id, WarehouseRequest.warehouse_id == current_user.get("warehouse_id"), WarehouseRequest.status == "pending").with_for_update().first()
     if item is None:
         raise HTTPException(status_code=404, detail="Pending stock request not found")
     inventory_rows = db.query(Inventory).join(Batch, Inventory.batch_id == Batch.batch_id).filter(Inventory.product_id == item.product_id, Inventory.warehouse_id == item.warehouse_id, Inventory.quantity > 0, Batch.expiry_date >= date.today()).order_by(Batch.expiry_date.asc()).with_for_update().all()
@@ -155,16 +120,10 @@ def approve_warehouse_request(
         remaining -= deduction
         if remaining == 0:
             break
-    personal = db.query(SalespersonInventory).filter(SalespersonInventory.salesperson_id == item.requested_by, SalespersonInventory.product_id == item.product_id).with_for_update().first()
-    if personal is None:
-        personal = SalespersonInventory(salesperson_id=item.requested_by, product_id=item.product_id, quantity=item.quantity)
-        db.add(personal)
-    else:
-        personal.quantity += item.quantity
     item.status = "approved"
     item.approved_by = current_user["user_id"]
     item.approved_at = datetime.utcnow()
-    create_notification(db, item.requested_by, "Stock request approved", f"Request #{item.request_id} was approved and added to your stock.", "warehouse_stock_approved")
+    create_notification(db, item.requested_by, "Stock request approved", f"Request #{item.request_id} was approved and inventory was issued.", "warehouse_stock_approved")
     db.commit()
     return {"message": "Stock request approved", "request_id": request_id, "status": item.status}
 
@@ -175,7 +134,7 @@ def reject_warehouse_request(
     db: Session = Depends(get_db),
     current_user: dict = Depends(require_permission("approve_orders")),
 ):
-    item = db.query(WarehouseRequest).filter(WarehouseRequest.request_id == request_id, WarehouseRequest.warehouse_id == current_user.get("warehouse_id"), WarehouseRequest.status == "pending").first()
+    item = db.query(WarehouseRequest).filter(WarehouseRequest.request_id == request_id, WarehouseRequest.warehouse_id == current_user.get("warehouse_id"), WarehouseRequest.status == "pending").with_for_update().first()
     if item is None:
         raise HTTPException(status_code=404, detail="Pending stock request not found")
     item.status = "rejected"
@@ -193,9 +152,6 @@ def list_orders(
 ):
     query = db.query(SalesOrder).order_by(SalesOrder.created_at.desc())
     query = query.filter(SalesOrder.warehouse_id == current_user.get("warehouse_id"))
-
-    if current_user["role"] == "salesperson":
-        query = query.filter(SalesOrder.created_by == current_user["user_id"])
 
     orders = query.all()
 
@@ -299,13 +255,13 @@ def approve_order(
     order_id: int,
     db: Session = Depends(get_db),
     current_user: dict = Depends(
-        require_permission("approve_orders")
+        require_permission("approve_sales_orders")
     )
 ):
     order = db.query(SalesOrder).filter(
         SalesOrder.order_id == order_id,
         SalesOrder.warehouse_id == current_user.get("warehouse_id"),
-    ).first()
+    ).with_for_update().first()
 
     if order is None:
         raise HTTPException(
@@ -319,16 +275,18 @@ def approve_order(
             detail="Only pending orders can be approved"
         )
 
-    if current_user["role"] == "warehouse_worker":
-        for item in db.query(SalesOrderItem).filter(SalesOrderItem.order_id == order_id).all():
-            available = db.query(Inventory).join(Batch, Inventory.batch_id == Batch.batch_id).filter(
-                Inventory.product_id == item.product_id,
-                Inventory.warehouse_id == current_user.get("warehouse_id"),
-                Inventory.quantity > 0,
-                Batch.expiry_date >= date.today(),
-            ).with_for_update().all()
-            if sum(row.quantity for row in available) < item.quantity:
-                raise HTTPException(status_code=400, detail=f"Insufficient unexpired inventory for product {item.product_id}")
+    requested_quantities = {}
+    for item in db.query(SalesOrderItem).filter(SalesOrderItem.order_id == order_id).all():
+        requested_quantities[item.product_id] = requested_quantities.get(item.product_id, 0) + item.quantity
+    for product_id, requested_quantity in requested_quantities.items():
+        available = db.query(Inventory).join(Batch, Inventory.batch_id == Batch.batch_id).filter(
+            Inventory.product_id == product_id,
+            Inventory.warehouse_id == current_user.get("warehouse_id"),
+            Inventory.quantity > 0,
+            Batch.expiry_date >= date.today(),
+        ).with_for_update().all()
+        if sum(row.quantity for row in available) < requested_quantity:
+            raise HTTPException(status_code=400, detail=f"Insufficient unexpired inventory for product {product_id}")
 
     order.status = OrderStatus.APPROVED.value
     create_notification(
@@ -369,13 +327,13 @@ def reject_order(
     order_id: int,
     db: Session = Depends(get_db),
     current_user: dict = Depends(
-        require_permission("approve_orders")
+        require_permission("approve_sales_orders")
     )
 ):
     order = db.query(SalesOrder).filter(
         SalesOrder.order_id == order_id,
         SalesOrder.warehouse_id == current_user.get("warehouse_id"),
-    ).first()
+    ).with_for_update().first()
 
     if order is None:
         raise HTTPException(
@@ -433,9 +391,6 @@ def get_order(
             detail="Order not found"
         )
 
-    if current_user["role"] == "salesperson" and order.created_by != current_user["user_id"]:
-        raise HTTPException(status_code=403, detail="You can only view your own orders")
-
     items = db.query(SalesOrderItem, Product.name).join(
         Product, SalesOrderItem.product_id == Product.product_id
     ).filter(
@@ -479,7 +434,7 @@ def fulfill_order(
     order = db.query(SalesOrder).filter(
         SalesOrder.order_id == order_id,
         SalesOrder.warehouse_id == current_user.get("warehouse_id"),
-    ).first()
+    ).with_for_update().first()
 
     if order is None:
         raise HTTPException(
@@ -564,7 +519,7 @@ def confirm_order_receipt(
         SalesOrder.order_id == order_id,
         SalesOrder.warehouse_id == current_user.get("warehouse_id"),
         SalesOrder.created_by == current_user["user_id"],
-    ).first()
+    ).with_for_update().first()
     if order is None:
         raise HTTPException(status_code=404, detail="Your order was not found")
     if order.status != OrderStatus.FULFILLED.value:

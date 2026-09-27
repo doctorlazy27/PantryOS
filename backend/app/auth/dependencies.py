@@ -55,8 +55,10 @@ def get_current_user(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="User account is no longer active",
             )
-        if role not in {UserRole.MANAGER.value, UserRole.WAREHOUSE_WORKER.value}:
-            raise HTTPException(status_code=403, detail="Only manager and warehouse worker accounts are supported")
+        try:
+            UserRole(role)
+        except ValueError:
+            raise HTTPException(status_code=403, detail="Unsupported account role")
 
         return {
             "user_id": int(user_id),

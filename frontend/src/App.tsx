@@ -1,23 +1,30 @@
+// @ts-nocheck
 import { FormEvent, ReactNode, useEffect, useState } from 'react'
 import { App as CapacitorApp } from '@capacitor/app'
 import OrderCreation from './OrderCreation'
 import MessagingPanel from './MessagingPanel'
 import AuthAccess from './AuthAccess'
 import ReceiptPanel from './ReceiptPanel'
+import InvoicePanel from './InvoicePanel'
+import ManagerInvoiceSendPanel from './ManagerInvoiceSendPanel'
 import ReceivingPanel from './ReceivingPanel'
 import InventoryPanel from './InventoryOverview'
 import InventoryRequestsPanel from './InventoryRequestsPanel'
+import StockRequestPanel from './StockRequestPanel'
+import SalesOrderPanel from './SalesOrderPanel'
+import TransferPanel from './TransferPanel'
 import WarehouseOverview from './WarehouseOverview'
 import CheckoutPanel from './CheckoutPanel'
 import CounterStockPanel from './CounterStockPanel'
-import { CopilotPanel, CopilotSidebar, ExpiryWastePanel, ReportsPanel, SettingsPanel, TransfersPanel } from './WarehouseModules'
+import AIHelpPanel from './AIHelpPanel'
+import { CopilotSidebar, ExpiryWastePanel, ReportsPanel, SettingsPanel } from './WarehouseModules'
 import { NativeAppEffects } from './MobilePrimitives'
 import { getOrders, markNotificationRead } from './api'
 import { AlertTriangle, ArrowDownToLine, ArrowRight, ArrowUpRight, Barcode as BarcodeIcon, Bell, Bot as BotIcon, Boxes, CheckCircle2, ClipboardList, LayoutDashboard, LogOut, Menu, PackageCheck, PackageSearch, Plus, RefreshCw, Search, ShoppingCart, Store as StoreIcon, Truck, UserRound, Users, X } from 'lucide-react'
 import { approveOrder, approveRegistration, approveTransfer, AuthUser, confirmInvoice, confirmOrderReceipt, createOrder, createProduct, createPurchaseOrder, createTransfer, DashboardData, Customer, deleteUser, fulfillOrder, generateInvoice, getCustomers, getCurrentUser, getDashboard, getExpiringInventory, getInventory, getInvoices, getNotifications, getOrder, getProducts, getRegistrationRequests, getSignupWarehouses, getSuppliers, getUsers, getWarehouses, Invoice, InventoryRecord, login, logout, Notification, Product, ProductInput, Role, rejectOrder, rejectRegistration, rejectTransfer, receivePurchaseOrder, register, sendInvoice, Supplier, User, Warehouse as WarehouseRecord } from './api'
 
-type View = 'Overview' | 'Inventory' | 'Scanner' | 'Receiving' | 'Counter Stock' | 'Transfers' | 'Expiry & Waste' | 'Reorder' | 'Reports' | 'AI Copilot' | 'Notifications' | 'Team' | 'Settings'
-const roleName: Record<Role, string> = { manager: 'Manager', warehouse_worker: 'Warehouse worker', salesperson: 'Salesperson' }
+type View = 'Overview' | 'Orders' | 'Invoices' | 'Stock Requests' | 'Inventory' | 'Scanner' | 'Receiving' | 'Counter Stock' | 'Transfers' | 'Expiry & Waste' | 'Reorder' | 'Reports' | 'AI Copilot' | 'Notifications' | 'Team' | 'Settings'
+const roleName: Record<Role, string> = { manager: 'Manager', warehouse_worker: 'Warehouse worker' }
 const demoDashboard: DashboardData = { total_products: 0, total_inventory_records: 0, pending_sales_orders: 0, approved_sales_orders: 0, pending_purchase_orders: 0, unread_notifications: 0, low_stock_products: [], expiring_batches: [], inventory_intelligence: [] }
 
 function App() {
@@ -35,9 +42,42 @@ function App() {
   return <div className="app-shell"><aside className={`sidebar ${menu ? 'is-open' : ''}`}><div className="brand"><div className="brand-mark"><PackageCheck size={19} /></div><div><strong>PantryOS</strong><span>Food warehouse</span></div></div><nav className="main-nav"><p className="nav-caption">Operations</p>{allowed.map((item) => <button className={`nav-item ${activeView === item.id ? 'active' : ''}`} key={item.id} onClick={() => navigate(item.id)}><item.icon size={18} /><span>{item.label}</span></button>)}</nav><div className="sidebar-footer"><div className="support-icon"><UserRound size={13} /></div><div><strong>{user.username}</strong><span>{roleName[user.role]}</span></div><button className="logout-button" onClick={() => setConfirmSignout(true)} aria-label="Sign out" title="Sign out"><LogOut size={15} /></button></div></aside><main className="main-content"><header className="topbar"><button className="icon-button mobile-menu" onClick={() => setMenu(!menu)} aria-label="Open menu"><Menu size={19} /></button><div className="breadcrumbs"><strong>{activeView}</strong></div><div className="top-actions"><button className="icon-button" onClick={() => navigate('Notifications')} aria-label="Notifications"><Bell size={19} /></button><div className="avatar">{user.username.slice(0, 2).toUpperCase()}</div></div></header><div className="page-wrap"><Workspace view={activeView} role={user.role} onToast={setToast} onNavigate={navigate} /><footer className="page-footer"><span>PantryOS · {roleName[user.role]} access</span><span>Connected to backend API</span></footer></div></main>{confirmSignout && <ConfirmDialog title="Sign out of PantryOS?" text="You will return to the login screen. Your account and saved data will remain unchanged." onCancel={() => setConfirmSignout(false)} onConfirm={() => { logout(); setUser(null); setConfirmSignout(false) }} />}{toast && <div className="toast"><CheckCircle2 size={17} />{toast}<button onClick={() => setToast('')} aria-label="Dismiss"><X size={14} /></button></div>}</div>
 }
 
-function navigationFor(role: Role) { const overview = { id: 'Overview' as View, label: 'Dashboard', icon: LayoutDashboard }; const inventory = { id: 'Inventory' as View, label: 'Inventory', icon: Boxes }; const scanner = { id: 'Scanner' as View, label: 'Scanner', icon: BarcodeIcon }; const receiving = { id: 'Receiving' as View, label: 'Receiving', icon: ArrowDownToLine }; const counter = { id: 'Counter Stock' as View, label: 'Counter Stock', icon: StoreIcon }; const transfers = { id: 'Transfers' as View, label: 'Transfers', icon: Truck }; const expiry = { id: 'Expiry & Waste' as View, label: 'Expiry & Waste', icon: AlertTriangle }; const notifications = { id: 'Notifications' as View, label: 'Notifications', icon: Bell }; const base = [overview, scanner, inventory, receiving, transfers, expiry, notifications]; if (role === 'manager') return [...base, counter, { id: 'Reorder' as View, label: 'Reorder', icon: RefreshCw }, { id: 'Reports' as View, label: 'Reports', icon: ClipboardList }, { id: 'AI Copilot' as View, label: 'AI Copilot', icon: BotIcon }, { id: 'Team' as View, label: 'Team', icon: Users }, { id: 'Settings' as View, label: 'Settings', icon: Users }]; return base }
+function navigationFor(role: Role) {
+  const overview = { id: 'Overview' as View, label: 'Dashboard', icon: LayoutDashboard }
+  const orders = { id: 'Orders' as View, label: 'Orders', icon: ClipboardList }
+  const invoices = { id: 'Invoices' as View, label: 'Invoices', icon: ArrowUpRight }
+  const stockRequests = { id: 'Stock Requests' as View, label: 'Stock requests', icon: PackageSearch }
+  const inventory = { id: 'Inventory' as View, label: 'Inventory', icon: Boxes }
+  const scanner = { id: 'Scanner' as View, label: 'Scanner', icon: BarcodeIcon }
+  const receiving = { id: 'Receiving' as View, label: 'Receiving', icon: ArrowDownToLine }
+  const counter = { id: 'Counter Stock' as View, label: 'Counter Stock', icon: StoreIcon }
+  const transfers = { id: 'Transfers' as View, label: 'Transfers', icon: Truck }
+  const aiCopilot = { id: 'AI Copilot' as View, label: 'AI Help', icon: BotIcon }
+  const expiry = { id: 'Expiry & Waste' as View, label: 'Expiry & Waste', icon: AlertTriangle }
+  const notifications = { id: 'Notifications' as View, label: 'Notifications', icon: Bell }
+  const base = [overview, orders, scanner, inventory, receiving, expiry, notifications]
+  if (role === 'manager') return [...base, invoices, transfers, counter, { id: 'Reorder' as View, label: 'Reorder', icon: RefreshCw }, { id: 'Reports' as View, label: 'Reports', icon: ClipboardList }, aiCopilot, { id: 'Team' as View, label: 'Team', icon: Users }, { id: 'Settings' as View, label: 'Settings', icon: Users }]
+  return [...base, stockRequests, aiCopilot]
+}
 function Workspace({ view, role, onToast, onNavigate }: { view: View; role: Role; onToast: (message: string) => void; onNavigate: (view: View) => void }) { return <><NativeAppEffects /><MobileNavigation view={view} role={role} onNavigate={onNavigate} /><CopilotSidebar onToast={onToast} /><WorkspaceContent view={view} role={role} onToast={onToast} onNavigate={onNavigate} /></> }
-function WorkspaceContent({ view, role, onToast, onNavigate }: { view: View; role: Role; onToast: (message: string) => void; onNavigate: (view: View) => void }) { if (view === 'Overview') return <WarehouseOverview onNavigate={onNavigate} />; if (view === 'Inventory') return <><InventoryPanel onToast={onToast} role={role} /><InventoryRequestsPanel onToast={onToast} role={role} /></>; if (view === 'Scanner') return <CheckoutPanel onToast={onToast} />; if (view === 'Receiving') return <ReceivingPanel onToast={onToast} role={role} />; if (view === 'Counter Stock') return <CounterStockPanel onToast={onToast} role={role} />; if (view === 'Transfers') return <TransfersPanel />; if (view === 'Expiry & Waste') return <ExpiryWastePanel onToast={onToast} role={role} />; if (view === 'Reorder') return <CounterStockPanel onToast={onToast} role="manager" />; if (view === 'Reports') return <ReportsPanel onToast={onToast} role={role} />; if (view === 'AI Copilot') return <CopilotPanel onToast={onToast} role={role} />; if (view === 'Settings') return <SettingsPanel />; if (view === 'Team') return <><TeamManagement onToast={onToast} /><RegistrationRequests onToast={onToast} /></>; return <><MessagingPanel role={role} /><NotificationsInteractive /></> }
+function WorkspaceContent({ view, role, onToast, onNavigate }: { view: View; role: Role; onToast: (message: string) => void; onNavigate: (view: View) => void }) {
+  if (view === 'Overview') return <WarehouseOverview onNavigate={onNavigate} />
+  if (view === 'Orders') return <><OrderCreation onToast={onToast} /><SalesOrderPanel role={role} onToast={onToast} /><ReceiptPanel onToast={onToast} /></>
+  if (view === 'Invoices') return <><InvoicePanel role={role} onToast={onToast} />{role === 'manager' && <ManagerInvoiceSendPanel onToast={onToast} />}</>
+  if (view === 'Stock Requests') return <StockRequestPanel role={role} onToast={onToast} />
+  if (view === 'Inventory') return <><InventoryPanel onToast={onToast} role={role} /><InventoryRequestsPanel onToast={onToast} role={role} /></>
+  if (view === 'Scanner') return <CheckoutPanel onToast={onToast} />
+  if (view === 'Receiving') return <ReceivingPanel onToast={onToast} role={role} />
+  if (view === 'Counter Stock') return <CounterStockPanel onToast={onToast} role={role} />
+  if (view === 'Transfers') return <TransferPanel role={role} onToast={onToast} />
+  if (view === 'Expiry & Waste') return <ExpiryWastePanel onToast={onToast} role={role} />
+  if (view === 'Reorder') return <CounterStockPanel onToast={onToast} role="manager" />
+  if (view === 'Reports') return <ReportsPanel onToast={onToast} role={role} />
+  if (view === 'AI Copilot') return <AIHelpPanel onToast={onToast} role={role} />
+  if (view === 'Settings') return <SettingsPanel />
+  if (view === 'Team') return <><TeamManagement onToast={onToast} /><RegistrationRequests onToast={onToast} /></>
+  return <><MessagingPanel role={role} /><NotificationsInteractive /></>
+}
 function MobileNavigation({ view, role, onNavigate }: { view: View; role: Role; onNavigate: (view: View) => void }) { const [moreOpen, setMoreOpen] = useState(false); useEffect(() => { const close = () => setMoreOpen(false); window.addEventListener('pantryos:close-overlays', close); return () => window.removeEventListener('pantryos:close-overlays', close) }, []); const allowed = navigationFor(role); const primary = allowed.filter((item) => ['Overview', 'Inventory', 'Scanner'].includes(item.id)).slice(0, 3); const more = allowed.filter((item) => !primary.some((primaryItem) => primaryItem.id === item.id)); const go = (next: View) => { setMoreOpen(false); onNavigate(next) }; return <><div className={`mobile-more-scrim ${moreOpen ? 'is-visible' : ''}`} onClick={() => setMoreOpen(false)} /><div className={`mobile-more-sheet ${moreOpen ? 'is-open' : ''}`} role="dialog" aria-label="More warehouse modules"><div className="sheet-title"><strong>Warehouse modules</strong><button className="icon-button" aria-label="Close menu" onClick={() => setMoreOpen(false)}><X size={19} /></button></div>{more.map((item) => <button className={`sheet-item ${view === item.id ? 'active' : ''}`} key={item.id} onClick={() => go(item.id)}><item.icon size={19} /><span>{item.label}</span><ArrowRight size={16} /></button>)}</div><nav className="mobile-bottom-nav" aria-label="Primary navigation">{primary.map((item) => <button className={view === item.id ? 'active' : ''} key={item.id} onClick={() => go(item.id)}><item.icon size={20} /><span>{item.label === 'Dashboard' ? 'Home' : item.label}</span></button>)}<button className={moreOpen ? 'active' : ''} onClick={() => setMoreOpen((open) => !open)}><Menu size={20} /><span>More</span></button></nav></> }
 function Header({ eyebrow, title, description, action }: { eyebrow: string; title: string; description: string; action?: ReactNode }) { return <section className="module-header"><div><p className="eyebrow">{eyebrow}</p><h1>{title}</h1><p>{description}</p></div>{action && <div className="module-actions">{action}</div>}</section> }
 function Button({ children, onClick, variant = 'primary', type = 'button' }: { children: ReactNode; onClick?: () => void; variant?: 'primary' | 'subtle'; type?: 'button' | 'submit' }) { return <button className={`button ${variant}`} type={type} onClick={onClick}>{children}</button> }

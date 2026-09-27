@@ -1,5 +1,6 @@
 from datetime import date, datetime, timedelta
 from math import ceil
+import logging
 
 from sqlalchemy.orm import Session
 from sqlalchemy import text
@@ -13,6 +14,10 @@ from app.models.inventory_recommendation import InventoryRecommendation
 from app.models.user import User
 from app.models.warehouse import Warehouse
 from app.services.notification import create_notification_once
+from app.services.ai_assistant import suggest_inventory_actions
+from app.services.ai_provider import AIProviderError
+
+logger = logging.getLogger(__name__)
 
 
 def calculate_inventory_intelligence(db: Session, warehouse_id: int, today: date | None = None) -> list[dict]:
@@ -85,6 +90,7 @@ def process_inventory_intelligence(db: Session) -> dict[str, int]:
             return {"evaluated": 0, "notifications": 0, "skipped": 1}
     evaluated = 0
     notifications = 0
+    ai_suggestions = 0
     for warehouse_id, in db.query(Warehouse.warehouse_id).all():
         results = calculate_inventory_intelligence(db, warehouse_id)
         evaluated += len(results)
@@ -122,5 +128,42 @@ def process_inventory_intelligence(db: Session) -> dict[str, int]:
                 for user in [recipient for recipient in recipients if recipient.role == "manager"]:
                     notification = create_notification_once(db, user.user_id, "Reorder recommendation", message, "inventory_reorder_recommendation", recommendation_key)
                     notifications += int(notification.notification_id is None)
+        try:
+            suggestions = suggest_inventory_actions(results)
+        except AIProviderError:
+            logger.exception("AI inventory suggestions unavailable for warehouse %s", warehouse_id)
+            suggestions = []
+        managers = db.query(User).filter(User.warehouse_id == warehouse_id, User.role == "manager").all()
+        workers = db.query(User).filter(User.warehouse_id == warehouse_id, User.role == "warehouse_worker").all()
+        results_by_product = {result["product_id"]: result for result in results}
+        for suggestion in suggestions:
+            result = results_by_product[suggestion["product_id"]]
+            if suggestion["action"] == "ORDER_REVIEW":
+                recipients = managers
+                title = f"AI flagged reorder review ({suggestion['priority'].lower()})"
+                message = (
+                    f"Review replenishment for {result['product_name']}: the rule-based reorder estimate is "
+                    f"{result['recommended_reorder']} {result['unit']} at current stock {result['current_stock']}. "
+                    "AI prioritized this review; it did not create an order."
+                )
+            else:
+                recipients = managers + workers
+                title = f"AI suggested inventory check ({suggestion['priority'].lower()})"
+                message = (
+                    f"Manually verify {result['product_name']} stock and expiry records. "
+                    f"Current recorded stock is {result['current_stock']} {result['unit']}; "
+                    f"stockout risk is {result['stockout_risk'].lower()} and waste risk is {result['waste_risk'].lower()}."
+                )
+            for recipient in recipients:
+                notification = create_notification_once(
+                    db,
+                    recipient.user_id,
+                    title,
+                    message,
+                    "ai_inventory_suggestion",
+                    f"ai-inventory:{warehouse_id}:{result['product_id']}:{suggestion['action']}:{date.today().isoformat()}",
+                )
+                notifications += int(notification.notification_id is None)
+            ai_suggestions += 1
     db.commit()
-    return {"evaluated": evaluated, "notifications": notifications}
+    return {"evaluated": evaluated, "notifications": notifications, "ai_suggestions": ai_suggestions}

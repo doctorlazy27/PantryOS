@@ -1,4 +1,4 @@
-export type Role = 'manager' | 'warehouse_worker' | 'salesperson'
+export type Role = 'manager' | 'warehouse_worker'
 export type AuthUser = { user_id: number; username: string; role: Role; warehouse_id: number | null }
 export type RegistrationRequest = { request_id: number; username: string; full_name: string; role: Role; status: string; requested_at: string }
 
@@ -46,17 +46,20 @@ export type Notification = { notification_id: number; title: string; message: st
 export type MessageContact = { user_id: number; username: string; full_name: string; role: Role }
 export type IncomingMessage = { message_id: number; sender_id: number; sender_username: string; sender_role: Role; subject: string; body: string; is_read: boolean; created_at: string; reply_to_id?: number; can_reply: boolean }
 export type Invoice = { invoice_id: number; order_id: number; customer_id: number; generated_by?: string; total_amount: number; status: string; created_at?: string; sent_at?: string; confirmed_at?: string }
+export type InvoiceReportPeriod = 'weekly' | 'monthly' | 'yearly'
+export type InvoiceReport = { period: InvoiceReportPeriod; starts_on: string; ends_on: string; invoice_count: number; total_amount: number; by_status: Record<string, { count: number; amount: number }>; previous_period: { invoice_count: number; total_amount: number }; change_percent: number | null }
 export type CounterInventory = { counter_inventory_id: number; product_id: number; product_name: string; category: string; batch_id: number; batch_number: string; quantity: number; minimum_level: number; unit_price: number; expiry_date: string; status: string; last_replenished_at?: string }
 export type CounterAllocation = { allocation_id: number; product_id: number; product_name: string; quantity: number; status: string; created_at: string }
 export type CounterSale = { sale_id: number; bill_number: string; total_amount: number; worker_id: number; created_at: string }
 export type PurchaseOrder = { purchase_order_id: number; supplier_name: string; warehouse_id: number | null; status: string; created_at: string; items: Array<{ product_id: number; product_name: string; quantity: number }> }
 export type SalesOrder = { order_id: number; customer_id: number; created_by: number; status: string; created_at: string; items: Array<{ product_name: string; quantity: number }> }
+export type StockTransfer = { transfer_id: number; product_id: number; product_name: string; batch_id: number; batch_number: string; source_warehouse_id: number; source_warehouse_name: string; destination_warehouse_id: number; destination_warehouse_name: string; quantity: number; status: string; created_at: string }
 
 export type ProductInput = Omit<Product, 'product_id' | 'reorder_level' | 'units_per_box' | 'storage_section' | 'shelf_number' | 'aisle'> & { storage_section?: string; shelf_number?: string; aisle?: string; reorder_level?: number; units_per_box?: number; boxed_units?: number; unit_price?: number; box_unit_cost?: number; batch_number?: string; manufacturing_date?: string; expiry_date?: string }
 export type CustomerInput = Omit<Customer, 'customer_id'>
 export type SupplierInput = Omit<Supplier, 'supplier_id'>
 
-const API_URL = import.meta.env.VITE_API_URL ?? '/api'
+const API_URL = import.meta.env.DEV ? '/api' : import.meta.env.VITE_API_URL ?? '/api'
 
 export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const token = localStorage.getItem('pantryos_token')
@@ -126,6 +129,8 @@ export async function getMessages() { return api<{ messages: IncomingMessage[] }
 export async function sendMessage(input: { recipient_ids?: number[]; subject: string; body: string; broadcast?: boolean; reply_to_id?: number }) { return api<{ message: string; recipient_count: number }>('/notifications/messages', { method: 'POST', body: JSON.stringify(input) }) }
 export async function markMessageRead(messageId: number) { return api<{ message_id: number; is_read: boolean }>(`/notifications/messages/${messageId}/read`, { method: 'PATCH' }) }
 export async function getInvoices() { return api<{ invoices: Invoice[] }>('/invoices/') }
+export async function getInvoiceReport(period: InvoiceReportPeriod) { return api<InvoiceReport>(`/invoices/reports/${period}`) }
+export async function summarizeInvoiceReport(period: InvoiceReportPeriod) { return api<{ summary: string; ai_powered: boolean }>(`/invoices/reports/${period}/summary`, { method: 'POST' }) }
 export async function getExpiringInventory(days = 7) { return api<{ days: number; items: Array<{ inventory_id: number; product_id: number; product_name: string; warehouse_id: number; batch_id: number; batch_number: string; quantity: number; expiry_date: string; status: string; days_remaining: number; estimated_value: number }> }>(`/inventory/expiring?days=${days}`) }
 export async function getExpiredInventory() { return api<{ items: Array<{ inventory_id: number; product_id: number; product_name: string; batch_id: number; batch_number: string; quantity: number; expiry_date: string; status: string; estimated_value: number }> }>('/inventory/expired') }
 export async function getCounterInventory() { return api<{ inventory: CounterInventory[] }>('/counter/inventory') }
@@ -135,7 +140,7 @@ export async function approveCounterAllocation(id: number) { return api<Record<s
 export async function checkoutCounter(input: { items: Array<{ scanned_code: string; quantity: number }> }) { return api<{ sale_id: number; bill_number: string; total_amount: number; created_at: string }>('/counter/checkout', { method: 'POST', body: JSON.stringify(input) }) }
 export async function lookupCounterBarcode(barcode: string) { return api<{ product_name: string; unit_price: number; available_quantity: number; expiry_date: string; batch_number: string }>(`/counter/lookup?barcode=${encodeURIComponent(barcode)}`) }
 export async function getCounterSales() { return api<{ sales: CounterSale[] }>('/counter/sales') }
-export async function getWarehouseCopilot(question: string) { return api<{ answer: string; priorities: string[] }>(`/counter/copilot?question=${encodeURIComponent(question)}`) }
+export async function getWarehouseCopilot(question: string) { return api<{ answer: string; priorities: string[]; ai_powered: boolean }>(`/counter/copilot?question=${encodeURIComponent(question)}`) }
 export async function reduceInventoryByBarcode(input: { scanned_code: string; quantity: number; scan_event_id: string }) { return api<{ message: string; product_name: string; batch_number?: string; quantity_removed: number; remaining_quantity: number; remaining_barcode_units?: number; duplicate: boolean }>('/inventory/scan-reduction', { method: 'POST', body: JSON.stringify(input) }) }
 export async function getProductInventory(productId: number) { return api<{ product_id: number; inventory: InventoryRecord[] }>(`/inventory/product/${productId}`) }
 export async function getFefo(productId: number) { return api<{ product_id: number; batches: Array<{ inventory_id: number; warehouse_id: number; batch_id: number; batch_number: string; quantity: number; expiry_date: string }> }>(`/inventory/fefo/${productId}`) }
@@ -155,6 +160,7 @@ export async function createSale(input: { customer_name: string; items: Array<{ 
 export async function createPurchaseOrder(input: { supplier_id?: number; supplier_name?: string; items: Array<{ product_id?: number; product_name?: string; quantity: number }> }) { return api<Record<string, unknown>>('/purchase-orders/', { method: 'POST', body: JSON.stringify(input) }) }
 export async function getPurchaseOrders() { return api<{ purchase_orders: PurchaseOrder[] }>('/purchase-orders/') }
 export async function createTransfer(input: { product_id: number; batch_id: number; source_warehouse_id: number; destination_warehouse_id: number; quantity: number }) { return api<Record<string, unknown>>('/stock-transfers/', { method: 'POST', body: JSON.stringify(input) }) }
+export async function getTransfers() { return api<{ transfers: StockTransfer[] }>('/stock-transfers/') }
 export async function approveOrder(orderId: number) { return api<Record<string, unknown>>(`/orders/${orderId}/approve`, { method: 'PATCH' }) }
 export async function rejectOrder(orderId: number) { return api<Record<string, unknown>>(`/orders/${orderId}/reject`, { method: 'PATCH' }) }
 export async function fulfillOrder(orderId: number) { return api<Record<string, unknown>>(`/orders/${orderId}/fulfill`, { method: 'PATCH' }) }

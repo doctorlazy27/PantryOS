@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useState } from 'react'
 import { ShoppingCart } from 'lucide-react'
-import { createSale, getProducts, Product } from './api'
+import { createOrder, getProducts, Product } from './api'
 
 type Props = { onToast: (message: string) => void }
 
@@ -21,8 +21,8 @@ export default function OrderCreation({ onToast }: Props) {
     try {
       const numericQuantity = Number(quantity)
       if (!Number.isFinite(numericQuantity) || numericQuantity < 1) { onToast('Enter a quantity greater than zero'); return }
-      await createSale({ customer_name: customerName.trim(), items: [{ product_id: Number(product), quantity: numericQuantity }] })
-      onToast('Sale recorded from your received stock')
+      await createOrder({ customer_name: customerName.trim(), items: [{ product_id: Number(product), quantity: numericQuantity }] })
+      onToast('Sales order created for manager approval')
     } catch (error) {
       onToast(error instanceof Error ? error.message : 'Could not create order')
     }

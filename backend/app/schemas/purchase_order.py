@@ -10,4 +10,4 @@ class PurchaseOrderItemCreate(BaseModel):
 class PurchaseOrderCreate(BaseModel):
     supplier_id: int | None = None
     supplier_name: str | None = Field(default=None, min_length=1, max_length=150)
-    items: list[PurchaseOrderItemCreate]
+    items: list[PurchaseOrderItemCreate] = Field(min_length=1)

@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
+from typing import Literal
 from sqlalchemy.orm import Session
 from fastapi import APIRouter, Depends, HTTPException
 from app.database import get_db
@@ -9,25 +10,60 @@ from datetime import datetime
 from app.auth.dependencies import get_current_user, require_permission
 from app.auth.dependencies import require_permission
 from app.services.activity import log_activity
+from app.services.ai_assistant import summarize_invoice_report
+from app.services.ai_provider import AIProviderError
+from app.services.invoice_reports import build_invoice_report
+import logging
 
 router = APIRouter(
     prefix="/invoices",
     tags=["Invoices"]
 )
+logger = logging.getLogger(__name__)
+
+
+@router.get("/reports/{period}")
+def get_invoice_report(
+    period: Literal["weekly", "monthly", "yearly"],
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(require_permission("view_invoices")),
+):
+    return build_invoice_report(db, period, current_user)
+
+
+@router.post("/reports/{period}/summary")
+def summarize_invoice_period(
+    period: Literal["weekly", "monthly", "yearly"],
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(require_permission("view_invoices")),
+):
+    report = build_invoice_report(db, period, current_user)
+    summary = None
+    try:
+        summary = summarize_invoice_report(report)
+    except AIProviderError:
+        logger.exception("AI invoice report summary unavailable")
+    if summary:
+        return {"summary": summary, "ai_powered": True}
+    return {
+        "summary": f"{report['invoice_count']} invoices totalling {report['total_amount']:.2f} for {report['starts_on']} to {report['ends_on']}.",
+        "ai_powered": False,
+    }
 
 
 @router.get("/{invoice_id}")
 def get_invoice(
     invoice_id: int,
     db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_user)
+    current_user: dict = Depends(require_permission("view_invoices"))
 ):
-    invoice = db.query(Invoice).join(
+    query = db.query(Invoice).join(
         SalesOrder, Invoice.order_id == SalesOrder.order_id
     ).filter(
         Invoice.invoice_id == invoice_id,
         SalesOrder.warehouse_id == current_user.get("warehouse_id"),
-    ).first()
+    )
+    invoice = query.first()
 
     if invoice is None:
         raise HTTPException(
@@ -57,12 +93,13 @@ def send_invoice(
         require_permission("send_invoices")
     )
 ):
-    invoice = db.query(Invoice).join(
+    query = db.query(Invoice).join(
         SalesOrder, Invoice.order_id == SalesOrder.order_id
     ).filter(
         Invoice.invoice_id == invoice_id,
         SalesOrder.warehouse_id == current_user.get("warehouse_id"),
-    ).first()
+    )
+    invoice = query.with_for_update().first()
 
     if invoice is None:
         raise HTTPException(
@@ -101,17 +138,14 @@ def send_invoice(
 @router.get("/")
 def get_invoices(
     db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_user)
+    current_user: dict = Depends(require_permission("view_invoices"))
 ):
-    invoices = (
-        db.query(Invoice).join(
+    query = db.query(Invoice).join(
             SalesOrder, Invoice.order_id == SalesOrder.order_id
         ).filter(
             SalesOrder.warehouse_id == current_user.get("warehouse_id")
         )
-        .order_by(Invoice.created_at.desc())
-        .all()
-    )
+    invoices = query.order_by(Invoice.created_at.desc()).all()
 
     return {
         "invoices": invoices
@@ -130,7 +164,7 @@ def confirm_invoice(
     ).filter(
         Invoice.invoice_id == invoice_id,
         SalesOrder.warehouse_id == current_user.get("warehouse_id"),
-    ).first()
+    ).with_for_update().first()
 
     if invoice is None:
         raise HTTPException(
@@ -171,10 +205,11 @@ def generate_invoice(
     db: Session = Depends(get_db),
     current_user: dict = Depends(require_permission("send_invoices"))
 ):
-    order = db.query(SalesOrder).filter(
+    query = db.query(SalesOrder).filter(
         SalesOrder.order_id == order_id,
         SalesOrder.warehouse_id == current_user.get("warehouse_id")
-    ).first()
+    )
+    order = query.with_for_update().first()
 
     if order is None:
         raise HTTPException(
@@ -185,7 +220,7 @@ def generate_invoice(
     if order.status != "confirmed":
         raise HTTPException(
             status_code=400,
-            detail="Sales invoice can only be generated after the salesperson confirms receipt"
+            detail="Sales invoice can only be generated after the manager confirms receipt"
         )
 
     existing_invoice = db.query(Invoice).filter(

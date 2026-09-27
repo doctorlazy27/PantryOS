@@ -103,7 +103,7 @@ def approve_inventory_addition(
         InventoryAdditionRequest.request_id == request_id,
         InventoryAdditionRequest.warehouse_id == current_user.get("warehouse_id"),
         InventoryAdditionRequest.status == "pending",
-    ).first()
+    ).with_for_update().first()
     if item is None:
         raise HTTPException(status_code=404, detail="Pending inventory request not found")
     if approval.expiry_date <= approval.manufacturing_date:
@@ -171,7 +171,6 @@ def approve_inventory_addition(
     item.status = "approved"
     item.reviewed_by = current_user["user_id"]
     item.reviewed_at = datetime.utcnow()
-    log_activity(db, current_user["user_id"], current_user["username"], "INVENTORY_REQUEST_REJECTED", f"Rejected inventory addition request #{item.request_id}.")
     create_notification(db, item.requested_by, "Inventory request approved", f"Inventory request #{item.request_id} was approved.", "inventory_request_approved")
     db.commit()
     return {"message": "Inventory addition approved", "request_id": request_id, "status": item.status}
@@ -187,7 +186,7 @@ def reject_inventory_addition(
         InventoryAdditionRequest.request_id == request_id,
         InventoryAdditionRequest.warehouse_id == current_user.get("warehouse_id"),
         InventoryAdditionRequest.status == "pending",
-    ).first()
+    ).with_for_update().first()
     if item is None:
         raise HTTPException(status_code=404, detail="Pending inventory request not found")
     item.status = "rejected"

@@ -179,9 +179,12 @@ Paste this, replacing every placeholder:
 DATABASE_URL=postgresql+psycopg://pantryadmin:YOUR_RDS_PASSWORD@YOUR_RDS_ENDPOINT:5432/warehouse_db
 JWT_SECRET_KEY=YOUR_LONG_RANDOM_JWT_SECRET
 CORS_ORIGINS=http://YOUR_ELASTIC_IP
-AUTO_CREATE_SCHEMA=false
 ENABLE_LOCAL_EXPIRY_LOOP=true
+ENABLE_LOCAL_INVENTORY_AI_LOOP=true
 INTERNAL_JOB_SECRET=YOUR_LONG_RANDOM_JOB_SECRET
+AI_API_URL=https://openrouter.ai/api/v1/chat/completions
+AI_API_KEY=YOUR_FREE_TIER_PROVIDER_KEY
+AI_MODEL=YOUR_FREE_CHAT_MODEL_ID
 ```
 
 Generate secrets on EC2 with:
@@ -192,6 +195,14 @@ python3 -c 'import secrets; print(secrets.token_urlsafe(48))'
 
 If the RDS password contains `@`, `:`, `/`, `#`, or spaces, URL-encode it
 before placing it in `DATABASE_URL`.
+
+Choose a currently free-tier model supported by the configured OpenAI-compatible
+chat-completions endpoint. Free quotas and model availability can change. The
+AI key belongs only in `backend/.env`; never put it in a `VITE_*` variable or in
+the Android package. With no key/model configured, invoice summaries and AI Help
+use local deterministic fallbacks. The local inventory suggestion job runs once
+daily; disable it when using more than one backend replica and schedule the
+authenticated internal inventory-intelligence job from one external scheduler.
 
 ## 10. Do not overwrite the restored database
 
@@ -204,7 +215,7 @@ First check the migration version in pgAdmin:
 SELECT version_num FROM alembic_version;
 ```
 
-If it returns the latest repository revision (`0003_legacy_schema_completion`),
+If it returns the latest repository revision (`0010_approval_locations`),
 start the application directly.
 
 If the table is missing or the version is older, stop and make a backup of
@@ -215,7 +226,9 @@ source database was created by this repository's Alembic migrations:
 docker compose -f docker-compose.production.yml run --rm backend alembic upgrade head
 ```
 
-Never use `AUTO_CREATE_SCHEMA=true` against the restored production database.
+The backend does not automatically create or upgrade the schema. Keep schema
+changes under Alembic migrations and review the current revision before applying
+any migration to the restored database.
 
 ## 11. Build and start the application
 

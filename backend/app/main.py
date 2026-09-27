@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 from contextlib import asynccontextmanager
 
@@ -13,6 +14,8 @@ from app.database import SessionLocal, engine
 from app.models.product import Product
 from app.models.warehouse import Warehouse
 from app.routers.warehouses import router as warehouses_router
+from app.routers.customers import router as customers_router
+from app.routers.stock_transfers import router as stock_transfers_router
 from app.models.inventory import Inventory
 from app.models.boxed_unit import BoxedUnit
 from app.models.inventory_movement import InventoryMovement
@@ -37,7 +40,6 @@ from app.models.notification import Notification
 from app.models.message import Message
 from app.models.inventory_addition_request import InventoryAdditionRequest
 from app.models.warehouse_request import WarehouseRequest
-from app.models.salesperson_inventory import SalespersonInventory
 from app.routers.notifications import router as notifications_router
 from app.models.invoice import Invoice
 from app.models.auth_session import AuthSession
@@ -48,11 +50,30 @@ from app.models.inventory_recommendation import InventoryRecommendation
 from app.routers.recommendations import router as recommendations_router
 from app.routers.counter import router as counter_router
 from app.services.expiry import process_expiry
+from app.services.intelligence import process_inventory_intelligence
 from app.routers.dashboard import router as dashboard_router
+
+logger = logging.getLogger(__name__)
+
+
 def run_expiry_job() -> None:
     db = SessionLocal()
     try:
         process_expiry(db)
+    except Exception:
+        db.rollback()
+        logger.exception("Local expiry job failed")
+    finally:
+        db.close()
+
+
+def run_inventory_intelligence_job() -> None:
+    db = SessionLocal()
+    try:
+        process_inventory_intelligence(db)
+    except Exception:
+        db.rollback()
+        logger.exception("Local inventory intelligence job failed")
     finally:
         db.close()
 
@@ -63,18 +84,27 @@ async def expiry_loop() -> None:
         await asyncio.to_thread(run_expiry_job)
 
 
+async def inventory_intelligence_loop() -> None:
+    await asyncio.sleep(60)
+    while True:
+        await asyncio.to_thread(run_inventory_intelligence_job)
+        await asyncio.sleep(24 * 60 * 60)
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    if os.getenv("ENABLE_LOCAL_EXPIRY_LOOP", "true").lower() != "true":
-        yield
-        return
-    await asyncio.to_thread(run_expiry_job)
-    task = asyncio.create_task(expiry_loop())
+    tasks = []
+    if os.getenv("ENABLE_LOCAL_EXPIRY_LOOP", "true").lower() == "true":
+        await asyncio.to_thread(run_expiry_job)
+        tasks.append(asyncio.create_task(expiry_loop()))
+    if os.getenv("ENABLE_LOCAL_INVENTORY_AI_LOOP", "true").lower() == "true":
+        tasks.append(asyncio.create_task(inventory_intelligence_loop()))
     try:
         yield
     finally:
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 app = FastAPI(
     title="Food Warehouse Management System",
@@ -85,13 +115,12 @@ app = FastAPI(
 
 cors_origins = os.getenv("CORS_ORIGINS") or (
     "http://localhost:5173,http://127.0.0.1:5173,"
-    "http://localhost:8081,http://127.0.0.1:8081"
+    "http://localhost:8081,http://127.0.0.1:8081,https://localhost"
 )
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[origin.strip() for origin in cors_origins.split(",") if origin.strip()],
-    allow_origin_regex=r"https?://.*",
     allow_credentials=True,
     allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
@@ -99,12 +128,16 @@ app.add_middleware(
 
 app.include_router(auth_router)
 app.include_router(products_router)
+app.include_router(customers_router)
 app.include_router(warehouses_router)
 app.include_router(inventory_router)
 app.include_router(batches_router)
 app.include_router(users_router)
 app.include_router(suppliers_router)
 app.include_router(purchase_orders_router)
+app.include_router(orders_router)
+app.include_router(invoices_router)
+app.include_router(stock_transfers_router)
 app.include_router(activity_router)
 app.include_router(notifications_router)
 app.include_router(dashboard_router)

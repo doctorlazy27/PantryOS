@@ -1,9 +1,16 @@
 import datetime
+import os
 import sys
 
 if "pytest" in sys.modules:
     import pytest
     pytest.skip("Manual destructive database script; run explicitly only against a disposable database.", allow_module_level=True)
+
+database_url = os.getenv("DATABASE_URL")
+if os.getenv("ALLOW_DESTRUCTIVE_EXPIRY_TESTS") != "1":
+    raise SystemExit("Set ALLOW_DESTRUCTIVE_EXPIRY_TESTS=1 to run this destructive script.")
+if not database_url:
+    raise SystemExit("Set DATABASE_URL to a disposable test database.")
 
 from sqlalchemy import create_engine
 import sqlalchemy
@@ -17,7 +24,7 @@ from app.models.notification import Notification
 from app.models.inventory_movement import InventoryMovement
 from app.services.expiry import process_expiry
 
-engine = create_engine('postgresql+psycopg://postgres:2JI23CS123@localhost:5432/warehouse_db')
+engine = create_engine(database_url)
 SessionLocal = sessionmaker(bind=engine)
 db = SessionLocal()
 
