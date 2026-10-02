@@ -19,6 +19,7 @@ import CounterStockPanel from './CounterStockPanel'
 import AIHelpPanel from './AIHelpPanel'
 import { CopilotSidebar, ExpiryWastePanel, ReportsPanel, SettingsPanel } from './WarehouseModules'
 import { NativeAppEffects } from './MobilePrimitives'
+import NetworkActivityEffects from './NetworkActivityEffects'
 import { getOrders, markNotificationRead } from './api'
 import { AlertTriangle, ArrowDownToLine, ArrowRight, ArrowUpRight, Barcode as BarcodeIcon, Bell, Bot as BotIcon, Boxes, CheckCircle2, ClipboardList, LayoutDashboard, LogOut, Menu, PackageCheck, PackageSearch, Plus, RefreshCw, Search, ShoppingCart, Store as StoreIcon, Truck, UserRound, Users, X } from 'lucide-react'
 import { approveOrder, approveRegistration, approveTransfer, AuthUser, confirmInvoice, confirmOrderReceipt, createOrder, createProduct, createPurchaseOrder, createTransfer, DashboardData, Customer, deleteUser, fulfillOrder, generateInvoice, getCustomers, getCurrentUser, getDashboard, getExpiringInventory, getInventory, getInvoices, getNotifications, getOrder, getProducts, getRegistrationRequests, getSignupWarehouses, getSuppliers, getUsers, getWarehouses, Invoice, InventoryRecord, login, logout, Notification, Product, ProductInput, Role, rejectOrder, rejectRegistration, rejectTransfer, receivePurchaseOrder, register, sendInvoice, Supplier, User, Warehouse as WarehouseRecord } from './api'
@@ -59,7 +60,7 @@ function navigationFor(role: Role) {
   if (role === 'manager') return [...base, invoices, transfers, counter, { id: 'Reorder' as View, label: 'Reorder', icon: RefreshCw }, { id: 'Reports' as View, label: 'Reports', icon: ClipboardList }, aiCopilot, { id: 'Team' as View, label: 'Team', icon: Users }, { id: 'Settings' as View, label: 'Settings', icon: Users }]
   return [...base, stockRequests, aiCopilot]
 }
-function Workspace({ view, role, onToast, onNavigate }: { view: View; role: Role; onToast: (message: string) => void; onNavigate: (view: View) => void }) { return <><NativeAppEffects /><MobileNavigation view={view} role={role} onNavigate={onNavigate} /><CopilotSidebar onToast={onToast} /><WorkspaceContent view={view} role={role} onToast={onToast} onNavigate={onNavigate} /></> }
+function Workspace({ view, role, onToast, onNavigate }: { view: View; role: Role; onToast: (message: string) => void; onNavigate: (view: View) => void }) { return <><NativeAppEffects /><NetworkActivityEffects /><MobileNavigation view={view} role={role} onNavigate={onNavigate} /><CopilotSidebar onToast={onToast} /><WorkspaceContent view={view} role={role} onToast={onToast} onNavigate={onNavigate} /></> }
 function WorkspaceContent({ view, role, onToast, onNavigate }: { view: View; role: Role; onToast: (message: string) => void; onNavigate: (view: View) => void }) {
   if (view === 'Overview') return <WarehouseOverview onNavigate={onNavigate} />
   if (view === 'Orders') return <><OrderCreation onToast={onToast} /><SalesOrderPanel role={role} onToast={onToast} /><ReceiptPanel onToast={onToast} /></>

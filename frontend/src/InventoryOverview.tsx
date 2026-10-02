@@ -1,5 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { getDashboard, getExpiredInventory, getExpiringInventory, getInventory, getProducts, DashboardData, InventoryRecord, Product, Role } from './api'
+import { LoadingState } from './LoadingState'
+import { useLiveRefresh } from './useLiveRefresh'
 
 type Props = { role: Role; onToast: (message: string) => void }
 
@@ -29,7 +31,8 @@ export default function InventoryOverview({ role, onToast }: Props) {
     }
   }
 
-  useEffect(() => { void load() }, [])
+  const { initialLoading } = useLiveRefresh(load)
+  if (initialLoading) return <LoadingState label="Loading warehouse inventory" />
 
   const rows = products.map((product) => {
     const records = inventory.filter((item) => item.product_id === product.product_id)

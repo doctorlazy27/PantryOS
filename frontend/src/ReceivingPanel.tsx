@@ -1,6 +1,8 @@
 import { FormEvent, useEffect, useState } from 'react'
 import { ArrowDownToLine, CheckCircle2, Plus, RefreshCw } from 'lucide-react'
 import { createPurchaseOrder, getCurrentUser, getProducts, getPurchaseOrders, Product, PurchaseOrder, receivePurchaseOrder } from './api'
+import { LoadingState } from './LoadingState'
+import { useLiveRefresh } from './useLiveRefresh'
 
 type Props = { role: 'salesperson' | 'warehouse_worker' | 'manager'; onToast: (message: string) => void }
 
@@ -22,7 +24,8 @@ export default function ReceivingPanel({ role, onToast }: Props) {
       setWarehouseId(user.warehouse_id)
     } catch (error) { onToast(error instanceof Error ? error.message : 'Could not load receiving queue') }
   }
-  useEffect(() => { void load() }, [])
+  const { initialLoading } = useLiveRefresh(load)
+  if (initialLoading) return <LoadingState label="Loading receiving queue" />
 
   async function create(event: FormEvent) {
     event.preventDefault()

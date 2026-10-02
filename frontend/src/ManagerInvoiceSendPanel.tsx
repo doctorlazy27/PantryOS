@@ -1,6 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { FileText, RefreshCw } from 'lucide-react'
 import { getInvoices, Invoice, sendInvoice } from './api'
+import { LoadingState } from './LoadingState'
+import { useLiveRefresh } from './useLiveRefresh'
 
 type Props = { onToast: (message: string) => void }
 
@@ -15,7 +17,8 @@ export default function ManagerInvoiceSendPanel({ onToast }: Props) {
     }
   }
 
-  useEffect(() => { void load() }, [])
+  const { initialLoading } = useLiveRefresh(load)
+  if (initialLoading) return <LoadingState label="Loading generated invoices" />
 
   async function send(invoiceId: number) {
     try {

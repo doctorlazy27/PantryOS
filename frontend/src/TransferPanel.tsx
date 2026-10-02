@@ -1,7 +1,9 @@
 // @ts-nocheck
-import { FormEvent, useEffect, useState } from 'react'
+import { FormEvent, useState } from 'react'
 import { Truck } from 'lucide-react'
 import { approveTransfer, AuthUser, createTransfer, getCurrentUser, getFefo, getProducts, getTransfers, getWarehouses, Product, rejectTransfer, Role, StockTransfer, Warehouse } from './api'
+import { LoadingState } from './LoadingState'
+import { useLiveRefresh } from './useLiveRefresh'
 
 type Props = { onToast: (message: string) => void; role: Role }
 
@@ -25,7 +27,8 @@ export default function TransferPanel({ onToast, role }: Props) {
     }
   }
 
-  useEffect(() => { void load() }, [])
+  const { initialLoading } = useLiveRefresh(load)
+  if (initialLoading) return <LoadingState label="Loading transfer queue" />
 
   async function submit(event: FormEvent) {
     event.preventDefault()

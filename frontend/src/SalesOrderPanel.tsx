@@ -1,7 +1,9 @@
 // @ts-nocheck
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { AlertTriangle, CheckCircle2, RefreshCw } from 'lucide-react'
 import { approveOrder, fulfillOrder, getOrders, rejectOrder, Role } from './api'
+import { LoadingState } from './LoadingState'
+import { useLiveRefresh } from './useLiveRefresh'
 
 type Props = { role: Role; onToast: (message: string) => void }
 
@@ -18,7 +20,8 @@ export default function SalesOrderPanel({ role, onToast }: Props) {
     }
   }
 
-  useEffect(() => { void load() }, [])
+  const { initialLoading } = useLiveRefresh(load)
+  if (initialLoading) return <LoadingState label="Loading sales orders" />
 
   async function act(orderId: number, action: 'approve' | 'reject' | 'fulfill') {
     try {

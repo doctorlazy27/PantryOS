@@ -1,7 +1,9 @@
 // @ts-nocheck
-import { FormEvent, useEffect, useState } from 'react'
+import { FormEvent, useState } from 'react'
 import { ArrowDownToLine, CheckCircle2, RefreshCw, Send, Store } from 'lucide-react'
 import { approveCounterAllocation, CounterAllocation, CounterInventory, getCounterAllocations, getCounterInventory, getProducts, Product, requestCounterAllocation, Role } from './api'
+import { LoadingState } from './LoadingState'
+import { useLiveRefresh } from './useLiveRefresh'
 
 type Props = { role: Role; onToast: (message: string) => void }
 
@@ -21,7 +23,8 @@ export default function CounterStockPanel({ role, onToast }: Props) {
     } catch (error) { onToast(error instanceof Error ? error.message : 'Could not load counter stock') }
   }
 
-  useEffect(() => { void load() }, [])
+  const { initialLoading } = useLiveRefresh(load)
+  if (initialLoading) return <LoadingState label="Loading counter stock" />
 
   async function request(event: FormEvent) {
     event.preventDefault()

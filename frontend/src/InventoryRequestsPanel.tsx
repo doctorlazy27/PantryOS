@@ -1,5 +1,7 @@
-import { FormEvent, useEffect, useState } from 'react'
+import { FormEvent, useState } from 'react'
 import { approveInventoryAddition, createInventoryAdditionRequest, getInventoryAdditionRequests, rejectInventoryAddition, Role } from './api'
+import { LoadingState } from './LoadingState'
+import { useLiveRefresh } from './useLiveRefresh'
 
 type Props = { role: Role; onToast: (message: string) => void }
 type RequestRow = Awaited<ReturnType<typeof getInventoryAdditionRequests>>['requests'][number]
@@ -20,7 +22,8 @@ export default function InventoryRequestsPanel({ role, onToast }: Props) {
     catch (error) { onToast(error instanceof Error ? error.message : 'Could not load inventory requests') }
   }
 
-  useEffect(() => { void load() }, [])
+  const { initialLoading } = useLiveRefresh(load)
+  if (initialLoading) return <LoadingState label="Loading inventory requests" />
 
   async function submit(event: FormEvent) {
     event.preventDefault()

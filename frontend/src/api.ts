@@ -60,8 +60,18 @@ export type CustomerInput = Omit<Customer, 'customer_id'>
 export type SupplierInput = Omit<Supplier, 'supplier_id'>
 
 const API_URL = import.meta.env.DEV ? '/api' : import.meta.env.VITE_API_URL ?? '/api'
+let pendingRequests = 0
+
+function publishNetworkActivity() {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('pantryos:network-activity', { detail: { active: pendingRequests > 0 } }))
+  }
+}
 
 export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
+  pendingRequests += 1
+  publishNetworkActivity()
+  try {
   const token = localStorage.getItem('pantryos_token')
   let response: Response
   try {
@@ -76,7 +86,11 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
     }
     throw new Error(detail ?? (response.status === 401 ? 'Your session has expired. Please sign in again.' : 'Request failed'))
   }
-  return response.json() as Promise<T>
+  return await response.json() as T
+  } finally {
+    pendingRequests = Math.max(0, pendingRequests - 1)
+    publishNetworkActivity()
+  }
 }
 
 export async function getDashboard() {
