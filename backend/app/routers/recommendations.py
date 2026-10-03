@@ -7,6 +7,10 @@ from app.auth.dependencies import require_permission
 from app.database import get_db
 from app.models.inventory_recommendation import InventoryRecommendation
 from app.models.product import Product
+from app.models.purchase_order import PurchaseOrder
+from app.models.purchase_order_item import PurchaseOrderItem
+from app.models.supplier import Supplier
+from app.schemas.inventory_recommendation import RecommendationReview
 
 router = APIRouter(prefix="/inventory/recommendations", tags=["Inventory recommendations"])
 
@@ -46,6 +50,7 @@ def list_recommendations(
 def review_recommendation(
     recommendation_id: int,
     decision: str,
+    review: RecommendationReview | None = None,
     db: Session = Depends(get_db),
     current_user: dict = Depends(require_permission("review_inventory_recommendations")),
 ):
@@ -57,8 +62,35 @@ def review_recommendation(
     ).first()
     if item is None:
         raise HTTPException(status_code=404, detail="Recommendation not found")
+    if item.status != "PENDING":
+        raise HTTPException(status_code=409, detail="Recommendation has already been reviewed")
+    purchase_order_id = None
+    if decision == "approve":
+        if review is None or review.supplier_id is None:
+            raise HTTPException(status_code=400, detail="Choose a supplier to approve this reorder")
+        supplier = db.query(Supplier).filter(Supplier.supplier_id == review.supplier_id).first()
+        if supplier is None:
+            raise HTTPException(status_code=404, detail="Supplier not found")
+        product = db.query(Product).filter(Product.product_id == item.product_id).first()
+        if product is None:
+            raise HTTPException(status_code=404, detail="Recommended product not found")
+        purchase_order = PurchaseOrder(
+            supplier_id=supplier.supplier_id,
+            created_by=current_user["user_id"],
+            warehouse_id=item.warehouse_id,
+            status="pending",
+        )
+        db.add(purchase_order)
+        db.flush()
+        db.add(PurchaseOrderItem(
+            purchase_order_id=purchase_order.purchase_order_id,
+            product_id=item.product_id,
+            quantity=item.recommended_quantity,
+            unit_price=product.price,
+        ))
+        purchase_order_id = purchase_order.purchase_order_id
     item.status = {"approve": "APPROVED", "reject": "REJECTED", "complete": "COMPLETED"}[decision]
     item.reviewed_by = current_user["user_id"]
     item.reviewed_at = datetime.utcnow()
     db.commit()
-    return {"recommendation_id": item.recommendation_id, "status": item.status}
+    return {"recommendation_id": item.recommendation_id, "status": item.status, "purchase_order_id": purchase_order_id}

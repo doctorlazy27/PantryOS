@@ -117,6 +117,9 @@ def approve_stock_transfer(
             detail="Source inventory not found"
         )
 
+    if source_inventory.putaway_status != "confirmed":
+        raise HTTPException(status_code=409, detail="Source stock must be put away before transfer")
+
     if source_inventory.quantity < transfer.quantity:
         raise HTTPException(
             status_code=400,
@@ -149,7 +152,10 @@ def approve_stock_transfer(
             product_id=transfer.product_id,
             warehouse_id=transfer.destination_warehouse_id,
             batch_id=transfer.batch_id,
-            quantity=transfer.quantity
+            quantity=transfer.quantity,
+            storage_zone=source_inventory.storage_zone,
+            location_code="STAGING",
+            putaway_status="pending",
         )
 
         db.add(destination_inventory)

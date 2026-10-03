@@ -1,11 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.inventory import Inventory
 from app.schemas.inventory import InventoryCreate
 from app.auth.dependencies import require_permission
-from datetime import date
+from datetime import date, datetime, timedelta
 
 from app.models.batch import Batch
 from app.models.product import Product
@@ -13,21 +14,250 @@ from app.models.warehouse import Warehouse
 from app.models.inventory_addition_request import InventoryAdditionRequest
 from app.models.boxed_unit import BoxedUnit
 from app.models.inventory_movement import InventoryMovement
+from app.models.temperature_log import TemperatureLog
+from app.models.order_pick_scan import OrderPickScan
+from app.models.counter_inventory import CounterInventory
+from app.models.order import SalesOrder
+from app.models.order_item import SalesOrderItem
 from app.schemas.inventory_addition_request import InventoryAdditionRequestCreate
 from app.schemas.inventory_addition_approval import InventoryAdditionApproval
 from app.schemas.inventory_scan import InventoryScan
+from app.schemas.warehouse_workflow import BatchStatusUpdate, PutawayConfirm, TemperatureCheckCreate
 from app.services.activity import log_activity
 from app.services.notification import create_notification, notify_roles
-from datetime import datetime
 from app.services.boxed_units import create_boxed_units
 from app.services.expiry import process_expiry
 from app.services.inventory_guard import require_available_batch
+from app.services.cold_chain import temperature_is_safe, temperature_range
 
 
 router = APIRouter(
     prefix="/inventory",
     tags=["Inventory"]
 )
+
+
+@router.get("/putaway-queue")
+def list_putaway_queue(
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(require_permission("view_inventory")),
+):
+    rows = db.query(Inventory, Batch, Product).join(
+        Batch, Inventory.batch_id == Batch.batch_id
+    ).join(Product, Inventory.product_id == Product.product_id).filter(
+        Inventory.warehouse_id == current_user.get("warehouse_id"),
+        Inventory.putaway_status == "pending",
+        Batch.status == "active",
+    ).order_by(Batch.expiry_date.asc()).all()
+    return {"items": [{
+        "inventory_id": inventory.inventory_id,
+        "product_name": product.name,
+        "batch_number": batch.batch_number,
+        "quantity": inventory.quantity,
+        "storage_zone": inventory.storage_zone,
+        "expiry_date": batch.expiry_date,
+    } for inventory, batch, product in rows]}
+
+
+@router.patch("/{inventory_id}/putaway")
+def confirm_putaway(
+    inventory_id: int,
+    request: PutawayConfirm,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(require_permission("update_inventory")),
+):
+    inventory = db.query(Inventory).filter(
+        Inventory.inventory_id == inventory_id,
+        Inventory.warehouse_id == current_user.get("warehouse_id"),
+    ).with_for_update().first()
+    if inventory is None:
+        raise HTTPException(status_code=404, detail="Staged inventory not found")
+    batch = db.query(Batch).filter(Batch.batch_id == inventory.batch_id).with_for_update().first()
+    if batch is None or batch.status != "active":
+        raise HTTPException(status_code=409, detail="Only QC-approved batches can be put away")
+    if inventory.putaway_status != "pending":
+        raise HTTPException(status_code=409, detail="Inventory is not waiting for putaway")
+    if request.storage_zone != inventory.storage_zone:
+        raise HTTPException(status_code=400, detail="Scanned zone does not match the receiving zone")
+    location_code = request.location_code.strip().upper()
+    if location_code in {"STAGING", "QUARANTINE"}:
+        raise HTTPException(status_code=400, detail="Scan a final shelf or bin location")
+    inventory.location_code = location_code
+    inventory.putaway_status = "confirmed"
+    log_activity(db, current_user["user_id"], current_user["username"], "PUTAWAY_CONFIRMED", f"Put away inventory #{inventory_id} at {request.storage_zone}/{location_code}.")
+    db.commit()
+    return {"inventory_id": inventory_id, "storage_zone": inventory.storage_zone, "location_code": location_code, "putaway_status": inventory.putaway_status}
+
+
+@router.post("/batches/{batch_id}/temperature")
+def record_storage_temperature(
+    batch_id: int,
+    reading: TemperatureCheckCreate,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(require_permission("update_inventory")),
+):
+    inventory = db.query(Inventory).filter(
+        Inventory.batch_id == batch_id,
+        Inventory.warehouse_id == current_user.get("warehouse_id"),
+    ).with_for_update().first()
+    if inventory is None:
+        raise HTTPException(status_code=404, detail="Batch inventory not found in this warehouse")
+    batch = db.query(Batch).filter(Batch.batch_id == batch_id).with_for_update().first()
+    allowed = temperature_range(inventory.storage_zone)
+    within_range = temperature_is_safe(inventory.storage_zone, reading.temperature_c)
+    db.add(TemperatureLog(
+        batch_id=batch_id,
+        inventory_id=inventory.inventory_id,
+        warehouse_id=inventory.warehouse_id,
+        recorded_by=current_user["user_id"],
+        stage="storage",
+        storage_zone=inventory.storage_zone,
+        temperature_c=reading.temperature_c,
+        minimum_c=allowed.minimum_c,
+        maximum_c=allowed.maximum_c,
+        within_range=within_range,
+    ))
+    if not within_range:
+        batch.status = "quarantined"
+        db.query(Inventory).filter(Inventory.batch_id == batch_id, Inventory.warehouse_id == inventory.warehouse_id).update({Inventory.putaway_status: "hold", Inventory.location_code: "QUARANTINE"}, synchronize_session="fetch")
+        pending_orders = db.query(SalesOrder.order_id).filter(SalesOrder.status == "approved", SalesOrder.warehouse_id == inventory.warehouse_id).subquery()
+        db.query(OrderPickScan).filter(OrderPickScan.batch_id == batch_id, OrderPickScan.order_id.in_(pending_orders)).update({OrderPickScan.is_valid: False}, synchronize_session=False)
+        db.query(CounterInventory).filter(CounterInventory.batch_id == batch_id, CounterInventory.warehouse_id == inventory.warehouse_id).update({CounterInventory.quantity: 0}, synchronize_session=False)
+        notify_roles(db, {"manager"}, "Cold-chain exception", f"Batch {batch.batch_number} measured {reading.temperature_c} C outside the {inventory.storage_zone.lower()} range and was quarantined.", "cold_chain_exception", inventory.warehouse_id)
+    log_activity(db, current_user["user_id"], current_user["username"], "TEMPERATURE_RECORDED", f"Recorded {reading.temperature_c} C for batch {batch.batch_number}; within range: {within_range}.")
+    db.commit()
+    return {"batch_id": batch_id, "temperature_c": reading.temperature_c, "within_range": within_range, "batch_status": batch.status}
+
+
+@router.get("/temperature-logs")
+def list_temperature_logs(
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(require_permission("view_inventory")),
+):
+    rows = db.query(TemperatureLog).filter(
+        TemperatureLog.warehouse_id == current_user.get("warehouse_id")
+    ).order_by(TemperatureLog.recorded_at.desc()).limit(100).all()
+    return {"logs": [{
+        "temperature_log_id": row.temperature_log_id,
+        "batch_id": row.batch_id,
+        "inventory_id": row.inventory_id,
+        "stage": row.stage,
+        "storage_zone": row.storage_zone,
+        "temperature_c": row.temperature_c,
+        "minimum_c": row.minimum_c,
+        "maximum_c": row.maximum_c,
+        "within_range": row.within_range,
+        "recorded_at": row.recorded_at,
+    } for row in rows]}
+
+
+@router.get("/reports/operations")
+def get_operational_metrics(
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(require_permission("view_inventory_recommendations")),
+):
+    warehouse_id = current_user.get("warehouse_id")
+    cutoff = datetime.utcnow() - timedelta(days=30)
+    movement_rows = db.query(
+        InventoryMovement.movement_type,
+        func.coalesce(func.sum(InventoryMovement.quantity), 0),
+    ).filter(
+        InventoryMovement.warehouse_id == warehouse_id,
+        InventoryMovement.created_at >= cutoff,
+    ).group_by(InventoryMovement.movement_type).all()
+    movement_totals = {movement_type: int(quantity) for movement_type, quantity in movement_rows}
+    stock_on_hand = int(db.query(func.coalesce(func.sum(Inventory.quantity), 0)).join(
+        Batch, Inventory.batch_id == Batch.batch_id
+    ).filter(
+        Inventory.warehouse_id == warehouse_id,
+        Batch.status == "active",
+        Inventory.putaway_status == "confirmed",
+    ).scalar() or 0)
+    required_units = int(db.query(func.coalesce(func.sum(SalesOrderItem.quantity), 0)).join(
+        SalesOrder, SalesOrderItem.order_id == SalesOrder.order_id
+    ).filter(
+        SalesOrder.warehouse_id == warehouse_id,
+        SalesOrder.status == "fulfilled",
+        SalesOrder.created_at >= cutoff,
+    ).scalar() or 0)
+    verified_units = int(db.query(func.coalesce(func.sum(OrderPickScan.quantity), 0)).join(
+        SalesOrder, OrderPickScan.order_id == SalesOrder.order_id
+    ).filter(
+        SalesOrder.warehouse_id == warehouse_id,
+        SalesOrder.status == "fulfilled",
+        OrderPickScan.is_valid == True,
+        OrderPickScan.created_at >= cutoff,
+    ).scalar() or 0)
+    sold_units = movement_totals.get("SOLD", 0) + movement_totals.get("SOLD_COUNTER", 0)
+    expired_units = movement_totals.get("EXPIRED", 0) + movement_totals.get("COUNTER_EXPIRED", 0)
+    disposed_units = movement_totals.get("DISPOSED", 0)
+    donated_units = movement_totals.get("DONATED", 0)
+    return {
+        "period_days": 30,
+        "sold_units": sold_units,
+        "current_saleable_stock": stock_on_hand,
+        "stock_turn_rate": round(sold_units / stock_on_hand, 2) if stock_on_hand else None,
+        "fefo_verified_units": verified_units,
+        "fulfilled_units": required_units,
+        "fefo_compliance_percent": round(verified_units / required_units * 100, 1) if required_units else None,
+        "expired_units": expired_units,
+        "disposed_units": disposed_units,
+        "donated_units": donated_units,
+        "waste_units": expired_units + disposed_units,
+    }
+
+
+@router.patch("/batches/{batch_id}/status")
+def update_batch_status(
+    batch_id: int,
+    update: BatchStatusUpdate,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(require_permission("approve_inventory_requests")),
+):
+    batch = db.query(Batch).filter(Batch.batch_id == batch_id).with_for_update().first()
+    if batch is None:
+        raise HTTPException(status_code=404, detail="Batch not found")
+    rows = db.query(Inventory).filter(
+        Inventory.batch_id == batch_id,
+        Inventory.warehouse_id == current_user.get("warehouse_id"),
+    ).with_for_update().all()
+    if not rows:
+        raise HTTPException(status_code=404, detail="Batch is not assigned to your warehouse")
+    if batch.status in {"expired", "disposed", "donated"}:
+        raise HTTPException(status_code=409, detail="Expired or disposed batches cannot be reopened")
+    if update.status == "active" and batch.status != "quarantined":
+        raise HTTPException(status_code=409, detail="Only quarantined batches can be released")
+    if update.status in {"disposed", "donated"} and batch.status not in {"active", "quarantined"}:
+        raise HTTPException(status_code=409, detail="Batch cannot be disposed from its current status")
+    batch.status = update.status
+    for inventory in rows:
+        if update.status == "quarantined":
+            inventory.putaway_status = "hold"
+            inventory.location_code = "QUARANTINE"
+        elif update.status == "active":
+            inventory.putaway_status = "pending"
+            inventory.location_code = "STAGING"
+        elif update.status in {"disposed", "donated"} and inventory.quantity:
+            disposed_quantity = inventory.quantity
+            inventory.quantity = 0
+            db.add(InventoryMovement(
+                inventory_id=inventory.inventory_id,
+                product_id=inventory.product_id,
+                batch_id=batch_id,
+                warehouse_id=inventory.warehouse_id,
+                movement_type="DONATED" if update.status == "donated" else "DISPOSED",
+                quantity=disposed_quantity,
+                actor_id=current_user["user_id"],
+                actor_name=current_user["username"],
+                reason=update.reason,
+            ))
+    if update.status != "active":
+        pending_orders = db.query(SalesOrder.order_id).filter(SalesOrder.status == "approved", SalesOrder.warehouse_id == current_user.get("warehouse_id")).subquery()
+        db.query(OrderPickScan).filter(OrderPickScan.batch_id == batch_id, OrderPickScan.order_id.in_(pending_orders)).update({OrderPickScan.is_valid: False}, synchronize_session=False)
+        db.query(CounterInventory).filter(CounterInventory.batch_id == batch_id, CounterInventory.warehouse_id == current_user.get("warehouse_id")).update({CounterInventory.quantity: 0}, synchronize_session=False)
+    log_activity(db, current_user["user_id"], current_user["username"], "BATCH_STATUS_UPDATED", f"Batch {batch.batch_number} marked {update.status}: {update.reason}")
+    db.commit()
+    return {"batch_id": batch_id, "status": batch.status}
 
 
 @router.get("/addition-requests")
@@ -110,13 +340,15 @@ def approve_inventory_addition(
         raise HTTPException(status_code=400, detail="Expiry date must be after manufacturing date")
     if approval.expiry_date <= date.today():
         raise HTTPException(status_code=400, detail="Cannot approve an already expired batch")
+    allowed_temperature = temperature_range(approval.storage_zone)
+    passed_qc = temperature_is_safe(approval.storage_zone, approval.temperature_c)
     product = db.query(Product).filter(Product.product_id == item.product_id).first()
     if product is None:
         raise HTTPException(status_code=404, detail="Requested product not found")
     product.aisle = approval.aisle
     product.shelf_number = approval.shelf_number
     if item.batch_id is None:
-        batch = Batch(product_id=item.product_id, batch_number=approval.batch_number.strip(), manufacturing_date=approval.manufacturing_date, expiry_date=approval.expiry_date)
+        batch = Batch(product_id=item.product_id, batch_number=approval.batch_number.strip(), manufacturing_date=approval.manufacturing_date, expiry_date=approval.expiry_date, status="active" if passed_qc else "quarantined")
         db.add(batch)
         db.flush()
         item.batch_id = batch.batch_id
@@ -127,15 +359,21 @@ def approve_inventory_addition(
         batch.batch_number = approval.batch_number.strip()
         batch.manufacturing_date = approval.manufacturing_date
         batch.expiry_date = approval.expiry_date
+        if not passed_qc:
+            batch.status = "quarantined"
     existing = db.query(Inventory).filter(
         Inventory.product_id == item.product_id,
         Inventory.batch_id == item.batch_id,
         Inventory.warehouse_id == item.warehouse_id,
     ).with_for_update().first()
     if existing:
+        inventory = existing
         existing.quantity += item.quantity
         existing.boxed_units += item.boxed_units
         existing.total_box_cost += item.boxed_units * (item.box_unit_cost or item.unit_price * item.units_per_box)
+        existing.storage_zone = approval.storage_zone
+        existing.location_code = "STAGING" if passed_qc else "QUARANTINE"
+        existing.putaway_status = "pending" if passed_qc and batch.status == "active" else "hold"
         create_boxed_units(db, existing.inventory_id, item.boxed_units, item.units_per_box, item.unit_price, [item.scanned_code] if item.scanned_code else None)
         db.add(InventoryMovement(
             inventory_id=existing.inventory_id,
@@ -150,9 +388,20 @@ def approve_inventory_addition(
         ))
     else:
         box_cost = item.box_unit_cost or item.unit_price * item.units_per_box
-        inventory = Inventory(product_id=item.product_id, batch_id=item.batch_id, warehouse_id=item.warehouse_id,
-            quantity=item.quantity, boxed_units=item.boxed_units, units_per_box=item.units_per_box,
-            unit_price=item.unit_price, box_unit_cost=box_cost, total_box_cost=item.boxed_units * box_cost)
+        inventory = Inventory(
+            product_id=item.product_id,
+            batch_id=item.batch_id,
+            warehouse_id=item.warehouse_id,
+            quantity=item.quantity,
+            boxed_units=item.boxed_units,
+            units_per_box=item.units_per_box,
+            unit_price=item.unit_price,
+            box_unit_cost=box_cost,
+            total_box_cost=item.boxed_units * box_cost,
+            storage_zone=approval.storage_zone,
+            location_code="STAGING" if passed_qc else "QUARANTINE",
+            putaway_status="pending" if passed_qc and batch.status == "active" else "hold",
+        )
         db.add(inventory)
         db.flush()
         create_boxed_units(db, inventory.inventory_id, item.boxed_units, item.units_per_box, item.unit_price, [item.scanned_code] if item.scanned_code else None)
@@ -167,6 +416,20 @@ def approve_inventory_addition(
             actor_name=current_user["username"],
             reason=f"Inventory addition request #{item.request_id} approved.",
         ))
+    db.add(TemperatureLog(
+        batch_id=batch.batch_id,
+        inventory_id=inventory.inventory_id,
+        warehouse_id=item.warehouse_id,
+        recorded_by=current_user["user_id"],
+        stage="receiving",
+        storage_zone=approval.storage_zone,
+        temperature_c=approval.temperature_c,
+        minimum_c=allowed_temperature.minimum_c,
+        maximum_c=allowed_temperature.maximum_c,
+        within_range=passed_qc,
+    ))
+    if not passed_qc:
+        notify_roles(db, {"manager"}, "Cold-chain exception", f"Inventory request #{item.request_id} was received outside the {approval.storage_zone.lower()} temperature range and quarantined.", "cold_chain_exception", item.warehouse_id)
     log_activity(db, current_user["user_id"], current_user["username"], "INVENTORY_REQUEST_APPROVED", f"Approved inventory addition request #{item.request_id} for {item.quantity} units.")
     item.status = "approved"
     item.reviewed_by = current_user["user_id"]
@@ -230,6 +493,8 @@ def reduce_inventory_by_scan(
         raise HTTPException(status_code=404, detail="Barcode is not registered in this warehouse")
 
     boxed_unit, inventory, product, batch = match
+    if inventory.putaway_status != "confirmed":
+        raise HTTPException(status_code=409, detail="Inventory must be put away before it can be picked")
     require_available_batch(db, inventory.batch_id)
     if boxed_unit.remaining_units < scan.quantity:
         raise HTTPException(status_code=400, detail=f"Only {boxed_unit.remaining_units} units remain for this barcode")
@@ -411,6 +676,9 @@ def get_inventory(db: Session = Depends(get_db), current_user: dict = Depends(re
          "units_per_box": row.units_per_box, "unit_price": row.unit_price,
          "box_unit_cost": row.box_unit_cost, "total_box_cost": row.total_box_cost,
          "expired_quantity": row.expired_quantity,
+         "storage_zone": row.storage_zone, "location_code": row.location_code, "putaway_status": row.putaway_status,
+         "batch_status": db.query(Batch.status).filter(Batch.batch_id == row.batch_id).scalar(),
+         "batch_number": db.query(Batch.batch_number).filter(Batch.batch_id == row.batch_id).scalar(),
          "boxed_unit_ids": [box.box_code for box in db.query(BoxedUnit).filter(BoxedUnit.inventory_id == row.inventory_id).all()]}
         for row in inventory
     ]}
@@ -458,6 +726,8 @@ def get_fefo_stock(
             Inventory.product_id == product_id,
             Inventory.warehouse_id == current_user.get("warehouse_id"),
             Inventory.quantity > 0,
+            Inventory.putaway_status == "confirmed",
+            Batch.status == "active",
             Batch.expiry_date >= date.today()
         )
         .order_by(Batch.expiry_date.asc())

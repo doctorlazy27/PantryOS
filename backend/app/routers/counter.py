@@ -88,7 +88,7 @@ def approve_counter_allocation(allocation_id: int, db: Session = Depends(get_db)
     if allocation is None:
         raise HTTPException(status_code=404, detail="Pending counter allocation not found")
     remaining = allocation.quantity
-    warehouse_rows = db.query(Inventory, Batch).join(Batch, Inventory.batch_id == Batch.batch_id).filter(Inventory.warehouse_id == allocation.warehouse_id, Inventory.product_id == allocation.product_id, Inventory.quantity > 0, Batch.expiry_date > date.today()).order_by(Batch.expiry_date.asc()).with_for_update().all()
+    warehouse_rows = db.query(Inventory, Batch).join(Batch, Inventory.batch_id == Batch.batch_id).filter(Inventory.warehouse_id == allocation.warehouse_id, Inventory.product_id == allocation.product_id, Inventory.quantity > 0, Inventory.putaway_status == "confirmed", Batch.status == "active", Batch.expiry_date > date.today()).order_by(Batch.expiry_date.asc()).with_for_update().all()
     if sum(row.quantity for row, _ in warehouse_rows) < remaining:
         raise HTTPException(status_code=400, detail="Not enough valid warehouse stock for this allocation")
     for warehouse_row, batch in warehouse_rows:
@@ -122,7 +122,7 @@ def checkout(checkout: CheckoutCreate, db: Session = Depends(get_db), current_us
     prepared = []
     total = 0.0
     for requested in checkout.items:
-        match = db.query(CounterInventory, Product, Batch, BoxedUnit, Inventory).join(Product, CounterInventory.product_id == Product.product_id).join(Batch, CounterInventory.batch_id == Batch.batch_id).join(Inventory, (Inventory.product_id == CounterInventory.product_id) & (Inventory.batch_id == CounterInventory.batch_id) & (Inventory.warehouse_id == CounterInventory.warehouse_id)).join(BoxedUnit, BoxedUnit.inventory_id == Inventory.inventory_id).filter(CounterInventory.warehouse_id == warehouse_id, CounterInventory.quantity >= requested.quantity, Batch.expiry_date > date.today(), (BoxedUnit.scanned_code == requested.scanned_code) | (BoxedUnit.box_code == requested.scanned_code)).order_by(Batch.expiry_date.asc()).with_for_update().first()
+        match = db.query(CounterInventory, Product, Batch, BoxedUnit, Inventory).join(Product, CounterInventory.product_id == Product.product_id).join(Batch, CounterInventory.batch_id == Batch.batch_id).join(Inventory, (Inventory.product_id == CounterInventory.product_id) & (Inventory.batch_id == CounterInventory.batch_id) & (Inventory.warehouse_id == CounterInventory.warehouse_id)).join(BoxedUnit, BoxedUnit.inventory_id == Inventory.inventory_id).filter(CounterInventory.warehouse_id == warehouse_id, CounterInventory.quantity >= requested.quantity, Inventory.putaway_status == "confirmed", Batch.status == "active", Batch.expiry_date > date.today(), (BoxedUnit.scanned_code == requested.scanned_code) | (BoxedUnit.box_code == requested.scanned_code)).order_by(Batch.expiry_date.asc()).with_for_update().first()
         if match is None:
             known = db.query(CounterInventory.quantity).join(Batch, CounterInventory.batch_id == Batch.batch_id).join(Inventory, (Inventory.product_id == CounterInventory.product_id) & (Inventory.batch_id == CounterInventory.batch_id) & (Inventory.warehouse_id == CounterInventory.warehouse_id)).join(BoxedUnit, BoxedUnit.inventory_id == Inventory.inventory_id).filter(CounterInventory.warehouse_id == warehouse_id, (BoxedUnit.scanned_code == requested.scanned_code) | (BoxedUnit.box_code == requested.scanned_code)).order_by(Batch.expiry_date.asc()).first()
             if known is not None and known[0] <= 0:
@@ -159,7 +159,7 @@ def get_counter_sales(db: Session = Depends(get_db), current_user: dict = Depend
 
 @router.get("/lookup")
 def lookup_counter_barcode(barcode: str, db: Session = Depends(get_db), current_user: dict = Depends(require_permission("checkout_counter"))):
-    row = db.query(CounterInventory, Product, Batch, BoxedUnit).join(Product, CounterInventory.product_id == Product.product_id).join(Batch, CounterInventory.batch_id == Batch.batch_id).join(Inventory, (Inventory.product_id == CounterInventory.product_id) & (Inventory.batch_id == CounterInventory.batch_id) & (Inventory.warehouse_id == CounterInventory.warehouse_id)).join(BoxedUnit, BoxedUnit.inventory_id == Inventory.inventory_id).filter(CounterInventory.warehouse_id == current_user.get("warehouse_id"), (BoxedUnit.scanned_code == barcode) | (BoxedUnit.box_code == barcode)).order_by(Batch.expiry_date.asc()).first()
+    row = db.query(CounterInventory, Product, Batch, BoxedUnit).join(Product, CounterInventory.product_id == Product.product_id).join(Batch, CounterInventory.batch_id == Batch.batch_id).join(Inventory, (Inventory.product_id == CounterInventory.product_id) & (Inventory.batch_id == CounterInventory.batch_id) & (Inventory.warehouse_id == CounterInventory.warehouse_id)).join(BoxedUnit, BoxedUnit.inventory_id == Inventory.inventory_id).filter(CounterInventory.warehouse_id == current_user.get("warehouse_id"), Inventory.putaway_status == "confirmed", Batch.status == "active", (BoxedUnit.scanned_code == barcode) | (BoxedUnit.box_code == barcode)).order_by(Batch.expiry_date.asc()).first()
     if row is None:
         raise HTTPException(status_code=404, detail="Product not found at counter")
     counter, product, batch, _ = row

@@ -12,6 +12,10 @@ import InventoryPanel from './InventoryOverview'
 import InventoryRequestsPanel from './InventoryRequestsPanel'
 import StockRequestPanel from './StockRequestPanel'
 import SalesOrderPanel from './SalesOrderPanel'
+import WorkerOrderPanel from './WorkerOrderPanel'
+import ReorderPanel from './ReorderPanel'
+import OperationsReportPanel from './OperationsReportPanel'
+import ColdChainDashboardPanel from './ColdChainDashboardPanel'
 import TransferPanel from './TransferPanel'
 import WarehouseOverview from './WarehouseOverview'
 import CheckoutPanel from './CheckoutPanel'
@@ -57,13 +61,13 @@ function navigationFor(role: Role) {
   const expiry = { id: 'Expiry & Waste' as View, label: 'Expiry & Waste', icon: AlertTriangle }
   const notifications = { id: 'Notifications' as View, label: 'Notifications', icon: Bell }
   const base = [overview, orders, scanner, inventory, receiving, expiry, notifications]
-  if (role === 'manager') return [...base, invoices, transfers, counter, { id: 'Reorder' as View, label: 'Reorder', icon: RefreshCw }, { id: 'Reports' as View, label: 'Reports', icon: ClipboardList }, aiCopilot, { id: 'Team' as View, label: 'Team', icon: Users }, { id: 'Settings' as View, label: 'Settings', icon: Users }]
+  if (role === 'manager') return [...base, stockRequests, invoices, transfers, counter, { id: 'Reorder' as View, label: 'Reorder', icon: RefreshCw }, { id: 'Reports' as View, label: 'Reports', icon: ClipboardList }, aiCopilot, { id: 'Team' as View, label: 'Team', icon: Users }, { id: 'Settings' as View, label: 'Settings', icon: Users }]
   return [...base, stockRequests, aiCopilot]
 }
 function Workspace({ view, role, onToast, onNavigate }: { view: View; role: Role; onToast: (message: string) => void; onNavigate: (view: View) => void }) { return <><NativeAppEffects /><NetworkActivityEffects /><MobileNavigation view={view} role={role} onNavigate={onNavigate} /><CopilotSidebar onToast={onToast} /><WorkspaceContent view={view} role={role} onToast={onToast} onNavigate={onNavigate} /></> }
 function WorkspaceContent({ view, role, onToast, onNavigate }: { view: View; role: Role; onToast: (message: string) => void; onNavigate: (view: View) => void }) {
-  if (view === 'Overview') return <WarehouseOverview onNavigate={onNavigate} />
-  if (view === 'Orders') return <><OrderCreation onToast={onToast} /><SalesOrderPanel role={role} onToast={onToast} /><ReceiptPanel onToast={onToast} /></>
+  if (view === 'Overview') return <><WarehouseOverview onNavigate={onNavigate} />{role === 'manager' && <ColdChainDashboardPanel onToast={onToast} onNavigate={onNavigate} />}</>
+  if (view === 'Orders') return <>{role === 'manager' ? <><OrderCreation onToast={onToast} /><SalesOrderPanel role={role} onToast={onToast} /><ReceiptPanel onToast={onToast} /></> : <WorkerOrderPanel onToast={onToast} />}</>
   if (view === 'Invoices') return <><InvoicePanel role={role} onToast={onToast} />{role === 'manager' && <ManagerInvoiceSendPanel onToast={onToast} />}</>
   if (view === 'Stock Requests') return <StockRequestPanel role={role} onToast={onToast} />
   if (view === 'Inventory') return <><InventoryPanel onToast={onToast} role={role} /><InventoryRequestsPanel onToast={onToast} role={role} /></>
@@ -72,8 +76,8 @@ function WorkspaceContent({ view, role, onToast, onNavigate }: { view: View; rol
   if (view === 'Counter Stock') return <CounterStockPanel onToast={onToast} role={role} />
   if (view === 'Transfers') return <TransferPanel role={role} onToast={onToast} />
   if (view === 'Expiry & Waste') return <ExpiryWastePanel onToast={onToast} role={role} />
-  if (view === 'Reorder') return <CounterStockPanel onToast={onToast} role="manager" />
-  if (view === 'Reports') return <ReportsPanel onToast={onToast} role={role} />
+  if (view === 'Reorder') return <ReorderPanel onToast={onToast} />
+  if (view === 'Reports') return <><OperationsReportPanel onToast={onToast} /><ReportsPanel onToast={onToast} role={role} /></>
   if (view === 'AI Copilot') return <AIHelpPanel onToast={onToast} role={role} />
   if (view === 'Settings') return <SettingsPanel />
   if (view === 'Team') return <><TeamManagement onToast={onToast} /><RegistrationRequests onToast={onToast} /></>

@@ -1,6 +1,6 @@
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
 from app.auth.dependencies import require_permission
@@ -13,16 +13,45 @@ from app.auth.dependencies import require_permission
 from app.models.batch import Batch
 from app.models.inventory import Inventory
 from app.models.inventory_movement import InventoryMovement
+from app.models.temperature_log import TemperatureLog
 from app.services.boxed_units import create_boxed_units
+from app.services.cold_chain import temperature_is_safe, temperature_range
 from app.models.warehouse import Warehouse
 from app.models.supplier import Supplier
 from app.schemas.receiving import ReceivePurchaseOrder
+from app.services.ocr_provider import TextractNotConfigured, textract_provider_from_environment
 
 
 router = APIRouter(
     prefix="/purchase-orders",
     tags=["Purchase Orders"]
 )
+
+
+@router.post("/{purchase_order_id}/parse-document")
+async def parse_delivery_document(
+    purchase_order_id: int,
+    document: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(require_permission("receive_purchase_orders")),
+):
+    purchase_order = db.query(PurchaseOrder).filter(
+        PurchaseOrder.purchase_order_id == purchase_order_id,
+        PurchaseOrder.warehouse_id == current_user.get("warehouse_id"),
+        PurchaseOrder.status == "pending",
+    ).first()
+    if purchase_order is None:
+        raise HTTPException(status_code=404, detail="Pending purchase order not found")
+    if document.content_type not in {"application/pdf", "image/jpeg", "image/png", "image/tiff"}:
+        raise HTTPException(status_code=415, detail="Upload a PDF, JPEG, PNG, or TIFF delivery document")
+    contents = await document.read(5 * 1024 * 1024 + 1)
+    if len(contents) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Textract synchronous document uploads are limited to 5 MB")
+    try:
+        fields = textract_provider_from_environment().extract(contents)
+    except TextractNotConfigured as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    return {"purchase_order_id": purchase_order_id, "extracted": fields}
 
 @router.get("/")
 def list_purchase_orders(
@@ -116,11 +145,14 @@ def receive_purchase_order(
         if item.expiry_date <= date.today():
             raise HTTPException(status_code=400, detail="Cannot receive an already expired batch")
 
+        temp_range = temperature_range(item.storage_zone)
+        passed_qc = temperature_is_safe(item.storage_zone, item.temperature_c)
         batch = Batch(
             product_id=product.product_id,
             batch_number=item.batch_number,
             manufacturing_date=item.manufacturing_date,
-            expiry_date=item.expiry_date
+            expiry_date=item.expiry_date,
+            status="active" if passed_qc else "quarantined",
         )
 
         db.add(batch)
@@ -136,11 +168,26 @@ def receive_purchase_order(
             unit_price=item.unit_price,
             box_unit_cost=item.box_unit_cost or item.unit_price * item.units_per_box,
             total_box_cost=item.boxed_units * (item.box_unit_cost or item.unit_price * item.units_per_box),
+            storage_zone=item.storage_zone,
+            location_code="STAGING" if passed_qc else "QUARANTINE",
+            putaway_status="pending" if passed_qc else "hold",
         )
 
         db.add(inventory)
         db.flush()
         create_boxed_units(db, inventory.inventory_id, item.boxed_units, item.units_per_box, item.unit_price, item.scanned_codes)
+        db.add(TemperatureLog(
+            batch_id=batch.batch_id,
+            inventory_id=inventory.inventory_id,
+            warehouse_id=receiving.warehouse_id,
+            recorded_by=current_user["user_id"],
+            stage="receiving",
+            storage_zone=item.storage_zone,
+            temperature_c=item.temperature_c,
+            minimum_c=temp_range.minimum_c,
+            maximum_c=temp_range.maximum_c,
+            within_range=passed_qc,
+        ))
         db.add(InventoryMovement(
             inventory_id=inventory.inventory_id,
             product_id=inventory.product_id,
@@ -164,6 +211,10 @@ def receive_purchase_order(
         "warehouse_id": receiving.warehouse_id,
         "received_by": current_user["username"],
         "status": purchase_order.status
+        ,"quarantined_batches": [
+            item.batch_number for item in receiving.items
+            if not temperature_is_safe(item.storage_zone, item.temperature_c)
+        ]
     }
 
 

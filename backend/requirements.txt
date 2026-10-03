@@ -8,3 +8,5 @@ python-jose[cryptography]
 alembic
 pytest
 httpx
+python-multipart
+boto3

@@ -185,6 +185,7 @@ INTERNAL_JOB_SECRET=YOUR_LONG_RANDOM_JOB_SECRET
 AI_API_URL=https://openrouter.ai/api/v1/chat/completions
 AI_API_KEY=YOUR_FREE_TIER_PROVIDER_KEY
 AI_MODEL=YOUR_FREE_CHAT_MODEL_ID
+AWS_REGION=ap-south-1
 ```
 
 Generate secrets on EC2 with:
@@ -204,6 +205,15 @@ use local deterministic fallbacks. The local inventory suggestion job runs once
 daily; disable it when using more than one backend replica and schedule the
 authenticated internal inventory-intelligence job from one external scheduler.
 
+`AWS_REGION` enables the optional delivery-document parser at
+`POST /purchase-orders/{purchase_order_id}/parse-document`. The backend uses
+Textract `AnalyzeExpense` for PDF/JPEG/PNG/TIFF documents up to 5 MB. Attach an
+EC2 instance profile with `textract:AnalyzeExpense` permission in this region;
+use the role's temporary credentials rather than storing AWS access keys in
+`backend/.env`. Extracted fields are suggestions only and the worker must verify
+them against the physical delivery before receiving stock. Lot and expiry fields
+may not be present in every supplier document, so those values remain editable.
+
 ## 10. Do not overwrite the restored database
 
 Because the database was restored from pgAdmin, do **not** run a migration
@@ -215,7 +225,7 @@ First check the migration version in pgAdmin:
 SELECT version_num FROM alembic_version;
 ```
 
-If it returns the latest repository revision (`0010_approval_locations`),
+If it returns the latest repository revision (`0012_warehouse_workflow`),
 start the application directly.
 
 If the table is missing or the version is older, stop and make a backup of

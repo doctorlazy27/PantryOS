@@ -1,5 +1,7 @@
 from datetime import date
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -15,6 +17,8 @@ class ReceiveItem(BaseModel):
     batch_number: str
     manufacturing_date: date
     expiry_date: date
+    storage_zone: Literal["AMBIENT", "CHILLED", "FROZEN"]
+    temperature_c: float = Field(ge=-80, le=100)
 
 
 class ReceivePurchaseOrder(BaseModel):

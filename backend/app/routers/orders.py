@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 
 from app.database import get_db
 from app.models.order import SalesOrder
@@ -11,6 +12,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from datetime import date, datetime
 from app.services.order_status import OrderStatus
 from app.models.inventory import Inventory
+from app.models.boxed_unit import BoxedUnit
+from app.models.order_pick_scan import OrderPickScan
 from app.models.batch import Batch
 from app.models.customer import Customer
 from app.services.activity import log_activity
@@ -18,6 +21,7 @@ from app.services.notification import create_notification, notify_roles
 from app.models.warehouse_request import WarehouseRequest
 from app.models.inventory_movement import InventoryMovement
 from app.schemas.warehouse_request import WarehouseRequestCreate
+from app.schemas.warehouse_workflow import OrderPickScanCreate
 
 
 router = APIRouter(
@@ -33,6 +37,8 @@ def _fefo_plan(db: Session, product_id: int, warehouse_id: int, quantity: int, l
         Inventory.product_id == product_id,
         Inventory.warehouse_id == warehouse_id,
         Inventory.quantity > 0,
+        Inventory.putaway_status == "confirmed",
+        Batch.status == "active",
         Batch.expiry_date >= date.today(),
     ).order_by(Batch.expiry_date.asc())
     if lock:
@@ -99,7 +105,7 @@ def approve_warehouse_request(
     item = db.query(WarehouseRequest).filter(WarehouseRequest.request_id == request_id, WarehouseRequest.warehouse_id == current_user.get("warehouse_id"), WarehouseRequest.status == "pending").with_for_update().first()
     if item is None:
         raise HTTPException(status_code=404, detail="Pending stock request not found")
-    inventory_rows = db.query(Inventory).join(Batch, Inventory.batch_id == Batch.batch_id).filter(Inventory.product_id == item.product_id, Inventory.warehouse_id == item.warehouse_id, Inventory.quantity > 0, Batch.expiry_date >= date.today()).order_by(Batch.expiry_date.asc()).with_for_update().all()
+    inventory_rows = db.query(Inventory).join(Batch, Inventory.batch_id == Batch.batch_id).filter(Inventory.product_id == item.product_id, Inventory.warehouse_id == item.warehouse_id, Inventory.quantity > 0, Inventory.putaway_status == "confirmed", Batch.status == "active", Batch.expiry_date >= date.today()).order_by(Batch.expiry_date.asc()).with_for_update().all()
     if sum(row.quantity for row in inventory_rows) < item.quantity:
         raise HTTPException(status_code=400, detail="Insufficient unexpired warehouse inventory")
     remaining = item.quantity
@@ -158,11 +164,20 @@ def list_orders(
     items_by_order: dict[int, list[dict]] = {}
     order_ids = [order.order_id for order in orders]
     if order_ids:
-        rows = db.query(SalesOrderItem.order_id, Product.name, SalesOrderItem.quantity).join(
+        rows = db.query(SalesOrderItem.order_id, SalesOrderItem.product_id, Product.name, SalesOrderItem.quantity).join(
             Product, SalesOrderItem.product_id == Product.product_id
         ).filter(SalesOrderItem.order_id.in_(order_ids)).all()
-        for order_id, product_name, quantity in rows:
-            items_by_order.setdefault(order_id, []).append({"product_name": product_name, "quantity": quantity})
+        for order_id, product_id, product_name, quantity in rows:
+            items_by_order.setdefault(order_id, []).append({"product_id": product_id, "product_name": product_name, "quantity": quantity})
+
+    picks_by_order: dict[int, dict[int, int]] = {}
+    if order_ids:
+        picked_rows = db.query(OrderPickScan.order_id, OrderPickScan.product_id, func.sum(OrderPickScan.quantity)).filter(
+            OrderPickScan.order_id.in_(order_ids),
+            OrderPickScan.is_valid == True,
+        ).group_by(OrderPickScan.order_id, OrderPickScan.product_id).all()
+        for order_id, product_id, quantity in picked_rows:
+            picks_by_order.setdefault(order_id, {})[product_id] = int(quantity)
 
     return {
         "orders": [
@@ -173,6 +188,7 @@ def list_orders(
                 "status": order.status,
                 "created_at": order.created_at,
                 "items": items_by_order.get(order.order_id, []),
+                "pick_progress": picks_by_order.get(order.order_id, {}),
             }
             for order in orders
         ]
@@ -283,6 +299,8 @@ def approve_order(
             Inventory.product_id == product_id,
             Inventory.warehouse_id == current_user.get("warehouse_id"),
             Inventory.quantity > 0,
+            Inventory.putaway_status == "confirmed",
+            Batch.status == "active",
             Batch.expiry_date >= date.today(),
         ).with_for_update().all()
         if sum(row.quantity for row in available) < requested_quantity:
@@ -421,6 +439,141 @@ def get_order(
             }
             for item, product_name in items
         ] if order.status == OrderStatus.APPROVED.value else [],
+        "pick_progress": {
+            product_id: int(quantity)
+            for product_id, quantity in db.query(OrderPickScan.product_id, func.sum(OrderPickScan.quantity)).filter(
+                OrderPickScan.order_id == order_id,
+                OrderPickScan.is_valid == True,
+            ).group_by(OrderPickScan.product_id).all()
+        },
+    }
+
+
+@router.post("/{order_id}/pick-scan")
+def scan_order_pick(
+    order_id: int,
+    scan: OrderPickScanCreate,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(require_permission("pick_stock")),
+):
+    prior = db.query(OrderPickScan).filter(OrderPickScan.event_key == scan.event_key).first()
+    if prior:
+        if prior.order_id != order_id:
+            raise HTTPException(status_code=409, detail="Scan event was already used for another order")
+        if not prior.is_valid:
+            raise HTTPException(status_code=409, detail="This pick was invalidated by a quality hold; scan the item again")
+        return {"message": "Scan already recorded", "duplicate": True, "picked_quantity": prior.quantity}
+
+    order = db.query(SalesOrder).filter(
+        SalesOrder.order_id == order_id,
+        SalesOrder.warehouse_id == current_user.get("warehouse_id"),
+        SalesOrder.status == OrderStatus.APPROVED.value,
+    ).with_for_update().first()
+    if order is None:
+        raise HTTPException(status_code=404, detail="Approved order not found")
+
+    match = db.query(Inventory, Batch, BoxedUnit).join(
+        Batch, Inventory.batch_id == Batch.batch_id
+    ).join(
+        BoxedUnit, BoxedUnit.inventory_id == Inventory.inventory_id
+    ).filter(
+        Inventory.warehouse_id == order.warehouse_id,
+        Inventory.putaway_status == "confirmed",
+        Inventory.quantity > 0,
+        Batch.status == "active",
+        Batch.expiry_date >= date.today(),
+        (BoxedUnit.scanned_code == scan.scanned_code) | (BoxedUnit.box_code == scan.scanned_code),
+    ).order_by(Batch.expiry_date.asc(), Inventory.inventory_id.asc()).with_for_update().first()
+    if match is None:
+        match = db.query(Inventory, Batch).join(
+            Batch, Inventory.batch_id == Batch.batch_id
+        ).filter(
+            Inventory.warehouse_id == order.warehouse_id,
+            Inventory.putaway_status == "confirmed",
+            Inventory.quantity > 0,
+            Batch.status == "active",
+            Batch.expiry_date >= date.today(),
+            Batch.batch_number == scan.scanned_code,
+        ).order_by(Batch.expiry_date.asc(), Inventory.inventory_id.asc()).with_for_update().first()
+        if match is not None:
+            inventory, batch = match
+            boxed_unit = None
+        else:
+            inventory = batch = boxed_unit = None
+    else:
+        inventory, batch, boxed_unit = match
+    if match is None:
+        raise HTTPException(status_code=404, detail="Barcode or batch is not available for picking in this warehouse")
+
+    requested_quantity = db.query(func.coalesce(func.sum(SalesOrderItem.quantity), 0)).filter(
+        SalesOrderItem.order_id == order_id,
+        SalesOrderItem.product_id == inventory.product_id,
+    ).scalar()
+    if not requested_quantity:
+        raise HTTPException(status_code=400, detail="Scanned product is not part of this order")
+    already_picked = db.query(func.coalesce(func.sum(OrderPickScan.quantity), 0)).filter(
+        OrderPickScan.order_id == order_id,
+        OrderPickScan.product_id == inventory.product_id,
+        OrderPickScan.is_valid == True,
+    ).scalar()
+    if already_picked + scan.quantity > requested_quantity:
+        raise HTTPException(status_code=400, detail="Scan exceeds the quantity requested for this product")
+
+    candidates = db.query(Inventory, Batch).join(Batch, Inventory.batch_id == Batch.batch_id).filter(
+        Inventory.product_id == inventory.product_id,
+        Inventory.warehouse_id == order.warehouse_id,
+        Inventory.quantity > 0,
+        Inventory.putaway_status == "confirmed",
+        Batch.status == "active",
+        Batch.expiry_date >= date.today(),
+    ).order_by(Batch.expiry_date.asc(), Inventory.inventory_id.asc()).with_for_update().all()
+    expected_inventory = None
+    for candidate, _candidate_batch in candidates:
+        reserved = db.query(func.coalesce(func.sum(OrderPickScan.quantity), 0)).join(
+            SalesOrder, OrderPickScan.order_id == SalesOrder.order_id
+        ).filter(
+            OrderPickScan.inventory_id == candidate.inventory_id,
+            OrderPickScan.is_valid == True,
+            SalesOrder.status == OrderStatus.APPROVED.value,
+        ).scalar()
+        if candidate.quantity - reserved > 0:
+            expected_inventory = candidate
+            break
+    if expected_inventory is None or expected_inventory.inventory_id != inventory.inventory_id:
+        raise HTTPException(status_code=409, detail="Pick the available batch with the earliest expiry date first")
+    if boxed_unit is not None:
+        box_reserved = db.query(func.coalesce(func.sum(OrderPickScan.quantity), 0)).join(
+            SalesOrder, OrderPickScan.order_id == SalesOrder.order_id
+        ).filter(
+            OrderPickScan.boxed_unit_id == boxed_unit.boxed_unit_id,
+            OrderPickScan.is_valid == True,
+            SalesOrder.status == OrderStatus.APPROVED.value,
+        ).scalar()
+        if boxed_unit.remaining_units - box_reserved < scan.quantity:
+            raise HTTPException(status_code=400, detail="Barcode has insufficient unreserved units")
+
+    db.add(OrderPickScan(
+        event_key=scan.event_key,
+        order_id=order_id,
+        inventory_id=inventory.inventory_id,
+        product_id=inventory.product_id,
+        batch_id=batch.batch_id,
+        boxed_unit_id=boxed_unit.boxed_unit_id if boxed_unit else None,
+        scanned_code=scan.scanned_code,
+        quantity=scan.quantity,
+        actor_id=current_user["user_id"],
+    ))
+    db.commit()
+    picked_total = already_picked + scan.quantity
+    return {
+        "message": "Pick scan verified",
+        "duplicate": False,
+        "product_id": inventory.product_id,
+        "batch_number": batch.batch_number,
+        "expiry_date": batch.expiry_date,
+        "location_code": inventory.location_code,
+        "picked_quantity": picked_total,
+        "requested_quantity": int(requested_quantity),
     }
 
 @router.patch("/{order_id}/fulfill")
@@ -458,30 +611,41 @@ def fulfill_order(
             detail="Order contains no items"
         )
 
-    requested_quantities = {}
+    requested_by_product: dict[int, int] = {}
     for item in items:
-        requested_quantities[item.product_id] = requested_quantities.get(item.product_id, 0) + item.quantity
+        requested_by_product[item.product_id] = requested_by_product.get(item.product_id, 0) + item.quantity
+    picked_by_product = {
+        product_id: int(quantity)
+        for product_id, quantity in db.query(OrderPickScan.product_id, func.sum(OrderPickScan.quantity)).filter(
+            OrderPickScan.order_id == order_id
+        ).group_by(OrderPickScan.product_id).all()
+    }
+    if any(picked_by_product.get(product_id, 0) < quantity for product_id, quantity in requested_by_product.items()):
+        raise HTTPException(status_code=400, detail="Scan and verify every item before dispatch")
 
-    allocations = []
-    for product_id, requested_quantity in requested_quantities.items():
-        plan = _fefo_plan(db, product_id, current_user.get("warehouse_id"), requested_quantity, lock=True)
-        if not plan:
-            raise HTTPException(status_code=400, detail=f"Insufficient unexpired stock for product {product_id}")
-        inventory_by_id = {row.inventory_id: row for row in db.query(Inventory).filter(Inventory.inventory_id.in_([entry["inventory_id"] for entry in plan])).with_for_update().all()}
-        allocations.extend((inventory_by_id[entry["inventory_id"]], entry["quantity"], entry) for entry in plan)
-
-    for inventory, deduction, plan_entry in allocations:
-        inventory.quantity -= deduction
+    pick_scans = db.query(OrderPickScan).filter(OrderPickScan.order_id == order_id, OrderPickScan.is_valid == True).with_for_update().all()
+    for pick in pick_scans:
+        inventory = db.query(Inventory).filter(Inventory.inventory_id == pick.inventory_id).with_for_update().first()
+        batch = db.query(Batch).filter(Batch.batch_id == pick.batch_id).with_for_update().first()
+        if inventory is None or batch is None or inventory.quantity < pick.quantity or inventory.putaway_status != "confirmed" or batch.status != "active" or batch.expiry_date < date.today():
+            raise HTTPException(status_code=409, detail="Picked inventory changed before dispatch")
+        inventory.quantity -= pick.quantity
+        if pick.boxed_unit_id is not None:
+            boxed_unit = db.query(BoxedUnit).filter(BoxedUnit.boxed_unit_id == pick.boxed_unit_id).with_for_update().first()
+            if boxed_unit is None or boxed_unit.remaining_units < pick.quantity:
+                raise HTTPException(status_code=409, detail="Scanned box quantity changed before dispatch")
+            boxed_unit.remaining_units -= pick.quantity
         db.add(InventoryMovement(
             inventory_id=inventory.inventory_id,
             product_id=inventory.product_id,
             batch_id=inventory.batch_id,
             warehouse_id=inventory.warehouse_id,
             movement_type="SOLD",
-            quantity=deduction,
+            event_key=f"order-pick:{pick.event_key}",
+            quantity=pick.quantity,
             actor_id=current_user["user_id"],
             actor_name=current_user["username"],
-            reason=f"Sales order #{order.order_id} fulfilled using FEFO batch {plan_entry['batch_number']}.",
+            reason=f"Sales order #{order.order_id} dispatched after verified FEFO pick.",
         ))
 
     order.status = OrderStatus.FULFILLED.value
@@ -503,8 +667,8 @@ def fulfill_order(
         "status": order.status,
         "fulfilled_by": current_user["username"],
         "fefo_allocations": [
-            {"inventory_id": inventory.inventory_id, "batch_id": inventory.batch_id, "quantity": deduction, "batch_number": plan_entry["batch_number"], "expiry_date": plan_entry["expiry_date"]}
-            for inventory, deduction, plan_entry in allocations
+            {"inventory_id": pick.inventory_id, "batch_id": pick.batch_id, "quantity": pick.quantity, "batch_number": db.query(Batch.batch_number).filter(Batch.batch_id == pick.batch_id).scalar(), "expiry_date": db.query(Batch.expiry_date).filter(Batch.batch_id == pick.batch_id).scalar()}
+            for pick in pick_scans
         ]
     }
 

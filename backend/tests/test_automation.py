@@ -32,7 +32,10 @@ from app.models.notification import Notification
 from app.models.order import SalesOrder
 from app.models.order_item import SalesOrderItem
 from app.models.invoice import Invoice
+from app.models.purchase_order import PurchaseOrder
+from app.models.purchase_order_item import PurchaseOrderItem
 from app.models.product import Product
+from app.models.supplier import Supplier
 from app.models.stock_transfer import StockTransfer
 from app.models.user import User
 from app.models.warehouse import Warehouse
@@ -50,9 +53,10 @@ from app.services.ai_assistant import suggest_inventory_actions
 from app.services.intelligence import process_inventory_intelligence
 from app.services.invoice_reports import build_invoice_report, period_window
 from app.services import ai_provider
-from app.routers.orders import _fefo_plan, approve_order, confirm_order_receipt, create_order, fulfill_order
+from app.routers.orders import _fefo_plan, approve_order, confirm_order_receipt, create_order, fulfill_order, scan_order_pick
+from app.routers.recommendations import review_recommendation
 from app.routers.invoices import confirm_invoice, generate_invoice, get_invoice, get_invoices, send_invoice, summarize_invoice_period
-from app.routers.inventory import approve_inventory_addition, request_inventory_addition
+from app.routers.inventory import approve_inventory_addition, confirm_putaway, request_inventory_addition
 from app.routers.counter import checkout
 from app.routers.counter import warehouse_copilot
 from app.routers.stock_transfers import list_stock_transfers
@@ -60,6 +64,10 @@ from app.schemas.counter import CheckoutCreate, CheckoutItem
 from app.schemas.inventory_addition_approval import InventoryAdditionApproval
 from app.schemas.inventory_addition_request import InventoryAdditionRequestCreate
 from app.schemas.order import OrderItemCreate, SalesOrderCreate
+from app.schemas.warehouse_workflow import OrderPickScanCreate, PutawayConfirm
+from app.schemas.inventory_recommendation import RecommendationReview
+from app.services.cold_chain import temperature_is_safe
+from app.services.ocr_provider import normalize_textract_expense
 
 
 @pytest.fixture()
@@ -145,6 +153,9 @@ def test_manager_has_sales_workflow_and_signup_hides_legacy_role():
     assert has_permission(UserRole.MANAGER, "request_stock_transfer")
     assert has_permission(UserRole.MANAGER, "approve_sales_orders")
     assert has_permission(UserRole.MANAGER, "view_invoices")
+    assert has_permission(UserRole.MANAGER, "request_warehouse_stock")
+    assert has_permission(UserRole.MANAGER, "update_inventory")
+    assert not has_permission(UserRole.WAREHOUSE_WORKER, "request_warehouse_stock")
     assert set(get_roles()["roles"]) == {UserRole.MANAGER.value, UserRole.WAREHOUSE_WORKER.value}
     assert not has_permission(UserRole.WAREHOUSE_WORKER, "approve_sales_orders")
     assert not has_permission(UserRole.WAREHOUSE_WORKER, "view_invoices")
@@ -209,6 +220,8 @@ def test_sales_order_completes_role_handoff_loop(db, monkeypatch):
     db.flush()
     inventory = Inventory(product_id=product.product_id, warehouse_id=warehouse.warehouse_id, batch_id=batch.batch_id, quantity=12)
     db.add(inventory)
+    db.flush()
+    db.add(BoxedUnit(inventory_id=inventory.inventory_id, scanned_code="FLOW-CODE", units=12, remaining_units=12))
     db.commit()
 
     def actor(user):
@@ -217,6 +230,7 @@ def test_sales_order_completes_role_handoff_loop(db, monkeypatch):
     request = SalesOrderCreate(customer_id=customer.customer_id, items=[OrderItemCreate(product_id=product.product_id, quantity=5)])
     created = create_order(request, db, actor(manager))
     approved = approve_order(created["order_id"], db, actor(manager))
+    picked = scan_order_pick(created["order_id"], OrderPickScanCreate(scanned_code="FLOW-CODE", quantity=5, event_key="FLOW-PICK-1"), db, actor(worker))
     fulfilled = fulfill_order(created["order_id"], db, actor(worker))
     with pytest.raises(HTTPException) as repeated_fulfillment:
         fulfill_order(created["order_id"], db, actor(worker))
@@ -242,6 +256,7 @@ def test_sales_order_completes_role_handoff_loop(db, monkeypatch):
 
     assert created["status"] == "pending"
     assert approved["status"] == "approved"
+    assert picked["picked_quantity"] == 5
     assert fulfilled["status"] == "fulfilled"
     assert repeated_fulfillment.value.status_code == 400
     assert confirmed["status"] == "confirmed"
@@ -254,6 +269,63 @@ def test_sales_order_completes_role_handoff_loop(db, monkeypatch):
     assert inventory.quantity == 7
     assert db.query(InventoryMovement).filter(InventoryMovement.movement_type == "SOLD").count() == 1
     assert db.query(Invoice).filter(Invoice.order_id == created["order_id"]).count() == 1
+
+
+def test_cold_chain_temperature_ranges():
+    assert temperature_is_safe("AMBIENT", 20)
+    assert temperature_is_safe("CHILLED", 4)
+    assert temperature_is_safe("FROZEN", -20)
+    assert not temperature_is_safe("CHILLED", 9)
+
+
+def test_reorder_approval_creates_receivable_purchase_order(db):
+    warehouse = Warehouse(name="Reorder warehouse", location="Test")
+    manager = User(username="reorder-manager", full_name="Manager", role="manager", password_hash="x")
+    product = Product(name="Reorder apples", category="Fruit", quantity=0, unit="kg", price=3.5)
+    supplier = Supplier(name="Orchard supplier", phone="000")
+    db.add_all([warehouse, manager, product, supplier])
+    db.flush()
+    manager.warehouse_id = warehouse.warehouse_id
+    recommendation = InventoryRecommendation(
+        recommendation_key="reorder-test-1",
+        product_id=product.product_id,
+        warehouse_id=warehouse.warehouse_id,
+        recommendation_type="REORDER",
+        current_stock=2,
+        average_daily_demand=1.5,
+        recommended_quantity=20,
+        reason="Projected shortage",
+    )
+    db.add(recommendation)
+    db.commit()
+    actor = {"user_id": manager.user_id, "username": manager.username, "role": manager.role, "warehouse_id": warehouse.warehouse_id}
+
+    result = review_recommendation(recommendation.recommendation_id, "approve", RecommendationReview(supplier_id=supplier.supplier_id), db, actor)
+    purchase_order = db.query(PurchaseOrder).filter_by(purchase_order_id=result["purchase_order_id"]).one()
+    item = db.query(PurchaseOrderItem).filter_by(purchase_order_id=purchase_order.purchase_order_id).one()
+
+    assert result["status"] == "APPROVED"
+    assert purchase_order.status == "pending"
+    assert item.product_id == product.product_id
+    assert item.quantity == 20
+    assert item.unit_price == 3.5
+
+
+def test_textract_expense_normalizer_extracts_reviewable_fields():
+    response = {"ExpenseDocuments": [{
+        "SummaryFields": [{"Type": {"Text": "VENDOR_NAME"}, "ValueDetection": {"Text": "Valley Foods"}}],
+        "LineItemGroups": [{"LineItems": [{"LineItemExpenseFields": [
+            {"Type": {"Text": "ITEM"}, "ValueDetection": {"Text": "Milk"}},
+            {"Type": {"Text": "QUANTITY"}, "ValueDetection": {"Text": "12"}},
+            {"Type": {"Text": "LOT_NUMBER"}, "ValueDetection": {"Text": "MLK-42"}},
+            {"Type": {"Text": "EXPIRY_DATE"}, "ValueDetection": {"Text": "2026-11-01"}},
+        ]}]}],
+    }]}
+    result = normalize_textract_expense(response)
+    assert result["vendor"] == "Valley Foods"
+    assert result["items"][0]["lot_number"] == "MLK-42"
+    assert result["items"][0]["expiry_date"] == "2026-11-01"
+    assert result["needs_review"] is True
 
 
 def test_worker_inventory_request_approval_has_consistent_audit(db):
@@ -274,17 +346,22 @@ def test_worker_inventory_request_approval_has_consistent_audit(db):
         batch_number="BEANS-1",
         manufacturing_date=date.today() - timedelta(days=1),
         expiry_date=date.today() + timedelta(days=100),
+        storage_zone="AMBIENT",
+        temperature_c=20,
         aisle="A1",
         shelf_number="S1",
     )
     result = approve_inventory_addition(created["request_id"], approval, db, actor(manager))
     addition = db.query(InventoryAdditionRequest).filter_by(request_id=created["request_id"]).one()
     inventory = db.query(Inventory).filter_by(warehouse_id=warehouse.warehouse_id).one()
+    putaway = confirm_putaway(inventory.inventory_id, PutawayConfirm(storage_zone="AMBIENT", location_code="A1-S1"), db, actor(worker))
     actions = {entry.action for entry in db.query(ActivityLog).all()}
 
     assert result["status"] == "approved"
     assert addition.status == "approved"
     assert inventory.quantity == 12
+    assert putaway["putaway_status"] == "confirmed"
+    assert inventory.storage_zone == "AMBIENT"
     assert "INVENTORY_REQUEST_APPROVED" in actions
     assert "INVENTORY_REQUEST_REJECTED" not in actions
 

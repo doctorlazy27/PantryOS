@@ -1,4 +1,4 @@
-from sqlalchemy import Float, ForeignKey, Integer
+from sqlalchemy import Float, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -41,3 +41,7 @@ class Inventory(Base):
     unit_price: Mapped[float] = mapped_column(Float, nullable=False, default=0)
     box_unit_cost: Mapped[float] = mapped_column(Float, nullable=False, default=0)
     total_box_cost: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+
+    storage_zone: Mapped[str] = mapped_column(String(30), nullable=False, default="AMBIENT")
+    location_code: Mapped[str] = mapped_column(String(100), nullable=False, default="UNASSIGNED")
+    putaway_status: Mapped[str] = mapped_column(String(20), nullable=False, default="confirmed")
