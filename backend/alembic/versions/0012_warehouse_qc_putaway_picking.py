@@ -1,7 +1,7 @@
 """Add receiving QC, putaway, and order-pick workflow state.
 
 Revision ID: 0012_warehouse_workflow
-Revises: 0011_merge_salesperson_into_manager, d7246e2552b9
+Revises: 0011_salesperson_to_manager, d7246e2552b9
 """
 
 from alembic import op
@@ -9,7 +9,7 @@ import sqlalchemy as sa
 
 
 revision = "0012_warehouse_workflow"
-down_revision = ("0011_merge_salesperson_into_manager", "d7246e2552b9")
+down_revision = ("0011_salesperson_to_manager", "d7246e2552b9")
 branch_labels = None
 depends_on = None
 
