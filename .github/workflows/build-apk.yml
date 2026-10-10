@@ -33,6 +33,8 @@ jobs:
 
       - name: Build frontend
         working-directory: frontend
+        env:
+          VITE_API_URL: http://13.50.132.176/api
         run: npm run build
 
       - name: Sync Capacitor Android project
